@@ -9,8 +9,25 @@ services:
       - key: APP_ENV
         value: production
       - key: LLM_PROVIDER
-        value: ollama
+        value: openrouter
+      - key: LLM_TIMEOUT_SECONDS
+        value: "45"
+      - key: CORS_ORIGINS
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: deepseek/deepseek-v4-flash-0731:free
       - key: DATABASE_URL
+        sync: false
+
+  - type: static
+    name: legal-document-ai-frontend
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
         sync: false
 
 # Render's managed PostgreSQL plan and persistent storage are account/plan dependent.

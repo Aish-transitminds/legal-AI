@@ -36,6 +36,20 @@ Render deployment is supported as a deployment target, but Render pricing, sleep
 storage persistence, and managed PostgreSQL availability depend on the current account plan.
 This project does not claim that hosted deployment is free or DPDP Act compliant.
 
+## Render deployment
+
+The repository includes `render.yaml` for a separate API web service and static frontend.
+Create a Blueprint from this repository, then set these secret or deployment-specific values
+in the Render dashboard:
+
+- API: `DATABASE_URL`, `CORS_ORIGINS`, and `OPENROUTER_API_KEY`.
+- Frontend: `VITE_API_BASE_URL`, set to the deployed API URL such as
+	`https://legal-document-ai-api.onrender.com`.
+
+The app remains editable after deployment: push changes to `main`, and Render will rebuild
+the affected services automatically. Keep API keys only in Render environment variables,
+never in GitHub.
+
 ## Local setup
 
 The development default is SQLite, so PostgreSQL is not required to run the MVP locally.
