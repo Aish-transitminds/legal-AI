@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: legal-document-ai-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LLM_PROVIDER
+        value: ollama
+      - key: DATABASE_URL
+        sync: false
+
+# Render's managed PostgreSQL plan and persistent storage are account/plan dependent.
+# Add a database only after Phase 2 schema work and cost confirmation.
