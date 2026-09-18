@@ -36,12 +36,47 @@ Render deployment is supported as a deployment target, but Render pricing, sleep
 storage persistence, and managed PostgreSQL availability depend on the current account plan.
 This project does not claim that hosted deployment is free or DPDP Act compliant.
 
-## Planned local setup
+## Local setup
 
-1. Install PostgreSQL locally.
-2. Install Ollama and pull a small model such as `llama3.2:3b`.
-3. Copy `.env.example` to `.env` and adjust local values.
-4. Install backend dependencies from `backend/requirements.txt` once Phase 2 begins.
+The development default is SQLite, so PostgreSQL is not required to run the MVP locally.
+
+```powershell
+cd backend
+python -m pip install -r requirements.txt
+python -m pytest -q
+python -m uvicorn app.main:app --reload
+```
+
+The API runs at `http://127.0.0.1:8000`. The frontend is a Vite app:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Copy `.env.example` to `.env` to configure the database. Install Ollama separately and
+pull a local model such as `llama3.2:3b` when enabling local LLM explanations.
+
+## Official law ingestion
+
+The official PDF must be downloaded manually from India Code and placed at
+`data/official/laws/indian_contract_act_1872.pdf`. Register its file checksum, then extract
+and persist the verified text:
+
+```powershell
+python scripts/register_official_law.py data/official/laws/indian_contract_act_1872.pdf `
+	--url "https://indiacode.gov.in/" `
+	--title "The Indian Contract Act, 1872"
+
+python scripts/ingest_official_law_pdf.py data/official/laws/indian_contract_act_1872.pdf `
+	--title "The Indian Contract Act, 1872" `
+	--citation "Act No. 9 of 1872" `
+	--url "https://indiacode.gov.in/"
+```
+
+The loader rejects unverified or checksum-mismatched source records and avoids duplicate
+database rows on repeat runs.
 
 The implementation will be delivered phase by phase. No dataset is considered downloaded
 until its file, provenance, checksum, and verification status are recorded.
