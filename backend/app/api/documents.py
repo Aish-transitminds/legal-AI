@@ -96,7 +96,7 @@ async def analyze_document_rules(file: UploadFile = File(...)) -> list[Finding]:
     extracted = await extract_document(file)
     clauses = [ClauseSegment.model_validate(clause) for clause in segment_clauses(extracted)]
     text = "\n".join(page.text for page in extracted.pages)
-    return run_document_rules(text, clauses)
+    return await run_document_rules(text, clauses, settings)
 
 
 def _persisted_response(document: Document) -> PersistedDocument:
@@ -136,7 +136,7 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
 
     clauses = [ClauseSegment.model_validate(clause) for clause in segment_clauses(extracted)]
     text = "\n".join(page.text for page in extracted.pages)
-    findings = run_document_rules(text, clauses)
+    findings = await run_document_rules(text, clauses, settings)
     content_sha256 = hashlib.sha256(content).hexdigest()
     risk_score, risk_level = _calculate_risk(findings, clauses)
     create_tables()

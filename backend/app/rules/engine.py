@@ -1,7 +1,9 @@
 import re
+import json
 
 from app.schemas.clauses import ClauseSegment
 from app.schemas.findings import Finding
+from app.services.legal_llm_service import build_legal_llm
 
 REQUIRED_CLAUSES = {
     "parties",
@@ -14,7 +16,7 @@ REQUIRED_CLAUSES = {
     "dispute_resolution",
 }
 
-# Regex fallbacks for old-style drafting that lacks explicit headings
+# Regex fallbacks as a first pass
 CLAUSE_FALLBACK_PATTERNS = {
     "parties": r"\b(?:between|lessor|lessee|landlord|tenant|buyer|seller|parties hereto)\b",
     "term": r"\b(?:for a term of|duration of|period of|commencing on|shall remain in force)\b",
@@ -27,18 +29,54 @@ CLAUSE_FALLBACK_PATTERNS = {
 }
 
 
-def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]:
+async def run_document_rules(text: str, clauses: list[ClauseSegment], settings) -> list[Finding]:
     clause_types = {clause.clause_type for clause in clauses}
     
-    # Fallback: scan the full text for legacy drafting patterns
+    # 1. Regex Fallback Pass
     for clause_type, pattern in CLAUSE_FALLBACK_PATTERNS.items():
         if clause_type not in clause_types:
             if re.search(pattern, text, re.IGNORECASE):
                 clause_types.add(clause_type)
 
+    # 2. LLM Hybrid Pass (Ask AI to find what the rules missed)
+    missing_from_rules = REQUIRED_CLAUSES - clause_types
+    llm_found_clauses = set()
+    
+    if missing_from_rules:
+        prompt = (
+            "You are an expert legal AI. Analyze the following document text and determine if any of "
+            "these specific legal concepts are present, regardless of what headings are used.\n\n"
+            f"Concepts to look for: {', '.join(missing_from_rules)}\n\n"
+            "Return ONLY a valid JSON array of objects. Each object must have:\n"
+            '- "clause_type": the string name of the concept\n'
+            '- "present": boolean true or false\n'
+            '- "evidence_quote": A short quote proving its presence, or null\n\n'
+            f"DOCUMENT TEXT (first 10000 chars):\n{text[:10000]}"
+        )
+        
+        try:
+            provider = build_legal_llm(settings)
+            llm_response = await provider.generate_text(prompt)
+            await provider.client.aclose()
+            
+            cleaned = llm_response.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.strip("`").removeprefix("json").strip()
+            
+            llm_results = json.loads(cleaned)
+            for item in llm_results:
+                if item.get("present") and item.get("clause_type") in missing_from_rules:
+                    llm_found_clauses.add(item.get("clause_type"))
+        except Exception as e:
+            # If LLM fails, we gracefully fall back to just the regex rules
+            pass
+
+    # Merge LLM findings with Rule findings
+    final_detected_clauses = clause_types | llm_found_clauses
     findings: list[Finding] = []
 
-    for clause_type in sorted(REQUIRED_CLAUSES - clause_types):
+    # Flag missing clauses ONLY if both rules AND LLM found nothing
+    for clause_type in sorted(REQUIRED_CLAUSES - final_detected_clauses):
         findings.append(
             Finding(
                 finding_type="missing_clause",
@@ -47,6 +85,7 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
             )
         )
 
+    # Standard Date & Jurisdiction checks
     if not re.search(r"\b(?:effective|execution|dated|date)\b", text, re.IGNORECASE):
         findings.append(
             Finding(
@@ -56,7 +95,7 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
             )
         )
 
-    if "jurisdiction" not in clause_types and not re.search(
+    if "jurisdiction" not in final_detected_clauses and not re.search(
         r"\bjurisdiction\b|\bvenue\b|\bcourts?\b", text, re.IGNORECASE
     ):
         findings.append(
@@ -67,7 +106,7 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
             )
         )
 
-    # Additional Risk Checks for Leases (Indian Context)
+    # Dynamic Document-Type Checks (Indian Lease Context)
     is_lease = bool(re.search(r"\b(?:lease|rent|lessor|lessee|tenant|demise)\b", text, re.IGNORECASE))
     if is_lease:
         if not re.search(r"\b(?:register|registration|registered)\b", text, re.IGNORECASE):
