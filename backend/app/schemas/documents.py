@@ -11,3 +11,5 @@ class PersistedDocument(BaseModel):
     document: ExtractedDocument
     clauses: list[ClauseSegment]
     findings: list[Finding]
+    risk_score: int = 0
+    risk_level: str = "low"

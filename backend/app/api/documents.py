@@ -15,15 +15,49 @@ from app.schemas.findings import Finding
 from app.schemas.ingestion import ExtractedDocument
 from app.schemas.llm import EvidenceSource, FindingExplanation
 from app.retrieval.retriever import HybridRetriever, SourceRecord
-from app.rules.engine import run_document_rules
+from app.rules.engine import run_document_rules, REQUIRED_CLAUSES
 from app.segmentation.clause_service import segment_clauses
-from app.services.legal_llm_service import build_legal_llm
+from app.services.legal_llm_service import build_legal_llm, _summary_prompt
 from typing import Any
 from app.schemas.llm import EvidenceSource as LlmEvidenceSource
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 settings = get_settings()
+
+
+def _calculate_risk(findings: list[Finding], clauses: list[ClauseSegment]) -> tuple[int, str]:
+    """Calculate a risk score (0-100) and risk level based on findings and clause coverage."""
+    score = 0
+    clause_types = {c.clause_type for c in clauses}
+    total_required = len(REQUIRED_CLAUSES)
+    missing_count = len(REQUIRED_CLAUSES - clause_types)
+
+    # Missing clauses: up to 60 points
+    if total_required > 0:
+        score += int((missing_count / total_required) * 60)
+
+    # Each finding adds risk
+    for f in findings:
+        if f.finding_type == "missing_clause":
+            score += 3
+        elif f.finding_type == "missing_jurisdiction":
+            score += 8
+        elif f.finding_type == "missing_date":
+            score += 5
+        else:
+            score += 2
+
+    score = min(score, 100)
+
+    if score >= 60:
+        level = "high"
+    elif score >= 30:
+        level = "medium"
+    else:
+        level = "low"
+
+    return score, level
 
 
 @router.post("/extract", response_model=ExtractedDocument)
@@ -73,12 +107,15 @@ def _persisted_response(document: Document) -> PersistedDocument:
     )
     clauses = [ClauseSegment.model_validate(clause.__dict__) for clause in document.clauses]
     findings = [Finding.model_validate(finding.__dict__) for finding in document.findings]
+    risk_score, risk_level = _calculate_risk(findings, clauses)
     return PersistedDocument(
         id=document.id,
         status=document.status,
         document=extracted,
         clauses=clauses,
         findings=findings,
+        risk_score=risk_score,
+        risk_level=risk_level,
     )
 
 
@@ -101,6 +138,7 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
     text = "\n".join(page.text for page in extracted.pages)
     findings = run_document_rules(text, clauses)
     content_sha256 = hashlib.sha256(content).hexdigest()
+    risk_score, risk_level = _calculate_risk(findings, clauses)
     create_tables()
 
     with SessionLocal.begin() as database:
@@ -111,12 +149,17 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
             )
         )
         if existing is not None:
+            ex_clauses = [ClauseSegment.model_validate(clause.__dict__) for clause in existing.clauses]
+            ex_findings = [Finding.model_validate(finding.__dict__) for finding in existing.findings]
+            ex_risk_score, ex_risk_level = _calculate_risk(ex_findings, ex_clauses)
             return PersistedDocument(
                 id=existing.id,
                 status=existing.status,
                 document=extracted,
-                clauses=[ClauseSegment.model_validate(clause.__dict__) for clause in existing.clauses],
-                findings=[Finding.model_validate(finding.__dict__) for finding in existing.findings],
+                clauses=ex_clauses,
+                findings=ex_findings,
+                risk_score=ex_risk_score,
+                risk_level=ex_risk_level,
             )
 
         document = Document(
@@ -149,6 +192,8 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
             document=extracted,
             clauses=clauses,
             findings=findings,
+            risk_score=risk_score,
+            risk_level=risk_level,
         )
 
 
@@ -170,6 +215,7 @@ async def explain_document_findings(document_id: str) -> list[FindingExplanation
         provider = build_legal_llm(settings)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+
     async def explain_one(finding: Finding) -> FindingExplanation:
         retrieved = retriever.search(f"{finding.finding_type} {finding.document_fact}") if retriever else None
         evidence = [] if retrieved is None else [
@@ -183,12 +229,75 @@ async def explain_document_findings(document_id: str) -> list[FindingExplanation
     except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Local AI is unavailable or returned invalid evidence. Start Ollama and try again.",
+            detail="AI service is temporarily unavailable. Please try again.",
         ) from error
     finally:
         await provider.client.aclose()
 
     return explanations
+
+
+@router.post("/{document_id}/summary")
+async def summarize_document(document_id: str) -> dict[str, str]:
+    """Generate an AI-powered plain-English summary of the analyzed document."""
+    with SessionLocal() as database:
+        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
+        if document is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
+        findings = [Finding.model_validate(f.__dict__) for f in document.findings]
+
+    clauses_info = "\n".join(f"- {c.clause_type}: {c.text[:150]}..." for c in clauses) or "No clauses detected."
+    findings_info = "\n".join(f"- [{f.finding_type}] {f.document_fact}" for f in findings) or "No findings."
+
+    # Get clause text for summary
+    full_text = "\n".join(c.text for c in clauses) if clauses else "No text extracted."
+
+    try:
+        provider = build_legal_llm(settings)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+
+    try:
+        prompt = _summary_prompt(full_text, clauses_info, findings_info)
+        summary = await provider.generate_text(prompt)
+    except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI service is temporarily unavailable. Please try again.",
+        ) from error
+    finally:
+        await provider.client.aclose()
+
+    return {"summary": summary}
+
+
+@router.get("/{document_id}/clause-coverage")
+def get_clause_coverage(document_id: str) -> dict[str, Any]:
+    """Return which required clauses are present vs missing."""
+    with SessionLocal() as database:
+        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
+        if document is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
+
+    detected = {c.clause_type for c in clauses}
+    coverage = []
+    for clause_type in sorted(REQUIRED_CLAUSES):
+        coverage.append({
+            "clause": clause_type,
+            "label": clause_type.replace("_", " ").title(),
+            "present": clause_type in detected,
+        })
+
+    present_count = sum(1 for c in coverage if c["present"])
+    return {
+        "total_required": len(REQUIRED_CLAUSES),
+        "present_count": present_count,
+        "missing_count": len(REQUIRED_CLAUSES) - present_count,
+        "coverage_percent": round(present_count / len(REQUIRED_CLAUSES) * 100) if REQUIRED_CLAUSES else 0,
+        "clauses": coverage,
+    }
 
 
 @router.get("/sources", response_model=list[LlmEvidenceSource])

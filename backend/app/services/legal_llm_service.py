@@ -47,6 +47,18 @@ def _validate_citations(
     )
 
 
+def _parse_general_response(
+    payload: dict[str, Any], finding: Finding
+) -> FindingExplanation:
+    return FindingExplanation(
+        status="AI_ANALYZED",
+        document_fact=finding.document_fact,
+        legal_source=payload.get("legal_source"),
+        ai_interpretation=payload.get("ai_interpretation", ""),
+        citations=[],
+    )
+
+
 def _prompt(finding: Finding, sources: list[EvidenceSource]) -> str:
     evidence = "\n\n".join(
         f"CITATION: {source.citation}\nSOURCE TEXT: {source.text}" for source in sources
@@ -59,6 +71,41 @@ def _prompt(finding: Finding, sources: list[EvidenceSource]) -> str:
         "legal_source, ai_interpretation, and citations, where citations must exactly match "
         "the provided CITATION values.\n\n"
         f"DOCUMENT FACT: {finding.document_fact}\n\nRETRIEVED EVIDENCE:\n{evidence}"
+    )
+
+
+def _general_prompt(finding: Finding) -> str:
+    return (
+        "You are a legal document analysis assistant specializing in Indian commercial law. "
+        "Analyze the following finding from a legal document review. Provide practical, "
+        "actionable guidance. Use cautious language such as 'Review Recommended' or "
+        "'Potential Issue'. Never say 'illegal'. Never invent a statute, citation, case name, "
+        "date, or quotation. If you reference a law, only mention well-known Indian statutes "
+        "like the Indian Contract Act 1872 or the Arbitration and Conciliation Act 1996 in "
+        "general terms.\n\n"
+        "Return JSON only with two fields:\n"
+        '- "legal_source": a brief note on the relevant area of law (or null)\n'
+        '- "ai_interpretation": your practical analysis and recommendation (2-4 sentences)\n\n'
+        f"DOCUMENT FINDING TYPE: {finding.finding_type}\n"
+        f"DOCUMENT FACT: {finding.document_fact}\n"
+        f"SEVERITY: {finding.severity}"
+    )
+
+
+def _summary_prompt(text: str, clauses_info: str, findings_info: str) -> str:
+    return (
+        "You are a legal document analysis assistant. Summarize the following legal document "
+        "in plain English. Include:\n"
+        "1. What type of agreement this is\n"
+        "2. Key parties and terms identified\n"
+        "3. Notable clauses found\n"
+        "4. Key risks or concerns\n"
+        "5. Overall assessment\n\n"
+        "Keep the summary concise (3-5 paragraphs). Use cautious language. "
+        "This is document analysis, not legal advice.\n\n"
+        f"DETECTED CLAUSES:\n{clauses_info}\n\n"
+        f"FINDINGS:\n{findings_info}\n\n"
+        f"DOCUMENT TEXT (first 3000 chars):\n{text[:3000]}"
     )
 
 
@@ -84,14 +131,24 @@ class OllamaProvider(LegalLLM):
     async def explain_finding(
         self, finding: Finding, sources: list[EvidenceSource]
     ) -> FindingExplanation:
-        if not sources:
-            return _insufficient(finding)
+        prompt = _prompt(finding, sources) if sources else _general_prompt(finding)
         response = await self.client.post(
             f"{self.base_url}/api/generate",
-            json={"model": self.model, "prompt": _prompt(finding, sources), "stream": False},
+            json={"model": self.model, "prompt": prompt, "stream": False},
         )
         response.raise_for_status()
-        return _validate_citations(_parse_json(response.json()["response"]), finding, sources)
+        payload = _parse_json(response.json()["response"])
+        if sources:
+            return _validate_citations(payload, finding, sources)
+        return _parse_general_response(payload, finding)
+
+    async def generate_text(self, prompt: str) -> str:
+        response = await self.client.post(
+            f"{self.base_url}/api/generate",
+            json={"model": self.model, "prompt": prompt, "stream": False},
+        )
+        response.raise_for_status()
+        return response.json()["response"]
 
 
 class OpenAICompatibleProvider(LegalLLM):
@@ -111,20 +168,35 @@ class OpenAICompatibleProvider(LegalLLM):
     async def explain_finding(
         self, finding: Finding, sources: list[EvidenceSource]
     ) -> FindingExplanation:
-        if not sources:
-            return _insufficient(finding)
+        prompt = _prompt(finding, sources) if sources else _general_prompt(finding)
         response = await self.client.post(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
             json={
                 "model": self.model,
-                "messages": [{"role": "user", "content": _prompt(finding, sources)}],
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
             },
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
-        return _validate_citations(_parse_json(content), finding, sources)
+        payload = _parse_json(content)
+        if sources:
+            return _validate_citations(payload, finding, sources)
+        return _parse_general_response(payload, finding)
+
+    async def generate_text(self, prompt: str) -> str:
+        response = await self.client.post(
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json={
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+            },
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
 
 
 def build_legal_llm(settings: Any) -> LegalLLM:

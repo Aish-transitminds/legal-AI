@@ -10,7 +10,7 @@ class EvidenceSource(BaseModel):
 
 
 class FindingExplanation(BaseModel):
-    status: Literal["EXPLAINED", "INSUFFICIENT_LEGAL_EVIDENCE"]
+    status: Literal["EXPLAINED", "AI_ANALYZED", "INSUFFICIENT_LEGAL_EVIDENCE"]
     document_fact: str
     legal_source: str | None = None
     ai_interpretation: str
