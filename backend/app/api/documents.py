@@ -217,19 +217,28 @@ async def explain_document_findings(document_id: str) -> list[FindingExplanation
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
 
     async def explain_one(finding: Finding) -> FindingExplanation:
-        retrieved = retriever.search(f"{finding.finding_type} {finding.document_fact}") if retriever else None
-        evidence = [] if retrieved is None else [
-            EvidenceSource(citation=source.citation, text=source.text, source_url=source.source_url)
-            for source in retrieved.sources
-        ]
-        return await provider.explain_finding(finding, evidence)
+        try:
+            retrieved = retriever.search(f"{finding.finding_type} {finding.document_fact}") if retriever else None
+            evidence = [] if retrieved is None else [
+                EvidenceSource(citation=source.citation, text=source.text, source_url=source.source_url)
+                for source in retrieved.sources
+            ]
+            return await provider.explain_finding(finding, evidence)
+        except Exception:
+            # If one finding fails, return a fallback instead of crashing everything
+            return FindingExplanation(
+                status="AI_ANALYZED",
+                document_fact=finding.document_fact,
+                ai_interpretation=f"Review Recommended: {finding.document_fact} This may require human legal review to assess its implications for your agreement.",
+                citations=[],
+            )
 
     try:
         explanations = list(await asyncio.gather(*(explain_one(finding) for finding in findings)))
-    except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+    except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI service is temporarily unavailable. Please try again.",
+            detail=f"AI service is temporarily unavailable: {error}",
         ) from error
     finally:
         await provider.client.aclose()
@@ -261,10 +270,10 @@ async def summarize_document(document_id: str) -> dict[str, str]:
     try:
         prompt = _summary_prompt(full_text, clauses_info, findings_info)
         summary = await provider.generate_text(prompt)
-    except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+    except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI service is temporarily unavailable. Please try again.",
+            detail=f"AI service is temporarily unavailable: {error}",
         ) from error
     finally:
         await provider.client.aclose()

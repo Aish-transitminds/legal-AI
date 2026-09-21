@@ -21,7 +21,7 @@ services:
       - key: LLM_PROVIDER
         value: openrouter
       - key: LLM_TIMEOUT_SECONDS
-        value: "45"
+        value: "90"
       - key: CORS_ORIGINS
         sync: false
       - key: OPENROUTER_API_KEY
