@@ -2,10 +2,12 @@ databases:
   - name: legal-ai-db
     databaseName: legal_ai
     user: legal_ai_user
+    plan: free
 
 services:
   - type: web
     name: legal-document-ai-api
+    plan: free
     runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
@@ -31,6 +33,7 @@ services:
 
   - type: web
     name: legal-document-ai-frontend
+    plan: free
     runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
