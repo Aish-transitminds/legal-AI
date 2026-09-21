@@ -20,7 +20,7 @@ services:
         value: "45"
       - key: CORS_ORIGINS
         fromService:
-          type: static
+          type: web
           name: legal-document-ai-frontend
           property: url
       - key: OPENROUTER_API_KEY
@@ -32,8 +32,9 @@ services:
           name: legal-ai-db
           property: connectionString
 
-  - type: static
+  - type: web
     name: legal-document-ai-frontend
+    runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
