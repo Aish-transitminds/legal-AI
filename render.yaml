@@ -19,10 +19,7 @@ services:
       - key: LLM_TIMEOUT_SECONDS
         value: "45"
       - key: CORS_ORIGINS
-        fromService:
-          type: web
-          name: legal-document-ai-frontend
-          property: url
+        sync: false
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
@@ -40,7 +37,4 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE_URL
-        fromService:
-          type: web
-          name: legal-document-ai-api
-          property: url
+        sync: false
