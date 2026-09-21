@@ -33,7 +33,6 @@ services:
 
   - type: web
     name: legal-document-ai-frontend
-    plan: free
     runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
