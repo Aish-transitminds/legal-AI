@@ -1,15 +1,22 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.documents import router as documents_router
 from app.core.config import get_settings
+from app.db import create_tables
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_tables()
+    yield
 
 settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     description="Local-first legal document analysis aid; not legal advice.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,

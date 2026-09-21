@@ -1,3 +1,8 @@
+databases:
+  - name: legal-ai-db
+    databaseName: legal_ai
+    user: legal_ai_user
+
 services:
   - type: web
     name: legal-document-ai-api
@@ -13,13 +18,18 @@ services:
       - key: LLM_TIMEOUT_SECONDS
         value: "45"
       - key: CORS_ORIGINS
-        sync: false
+        fromService:
+          type: static
+          name: legal-document-ai-frontend
+          property: url
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
         value: deepseek/deepseek-v4-flash-0731:free
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: legal-ai-db
+          property: connectionString
 
   - type: static
     name: legal-document-ai-frontend
@@ -28,7 +38,7 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE_URL
-        sync: false
-
-# Render's managed PostgreSQL plan and persistent storage are account/plan dependent.
-# Add a database only after Phase 2 schema work and cost confirmation.
+        fromService:
+          type: web
+          name: legal-document-ai-api
+          property: url
