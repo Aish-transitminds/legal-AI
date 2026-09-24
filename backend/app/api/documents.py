@@ -137,18 +137,9 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
             )
         )
         if existing is not None:
-            ex_clauses = [ClauseSegment.model_validate(clause.__dict__) for clause in existing.clauses]
-            ex_findings = [Finding.model_validate(finding.__dict__) for finding in existing.findings]
-            ex_risk_score, ex_risk_level = _calculate_risk(ex_findings, ex_clauses)
-            return PersistedDocument(
-                id=existing.id,
-                status=existing.status,
-                document=extracted,
-                clauses=ex_clauses,
-                findings=ex_findings,
-                risk_score=ex_risk_score,
-                risk_level=ex_risk_level,
-            )
+            # Delete old cached analysis so we always use the latest rules engine
+            database.delete(existing)
+            database.flush()
 
         document = Document(
             filename=extracted.filename,
