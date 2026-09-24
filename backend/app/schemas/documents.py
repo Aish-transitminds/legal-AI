@@ -13,3 +13,4 @@ class PersistedDocument(BaseModel):
     findings: list[Finding]
     risk_score: int = 0
     risk_level: str = "low"
+    doc_type: str = "general"

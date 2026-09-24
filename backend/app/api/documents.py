@@ -1,5 +1,6 @@
 import hashlib
 import asyncio
+import re
 
 import httpx
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
@@ -15,7 +16,7 @@ from app.schemas.findings import Finding
 from app.schemas.ingestion import ExtractedDocument
 from app.schemas.llm import EvidenceSource, FindingExplanation
 from app.retrieval.retriever import HybridRetriever, SourceRecord
-from app.rules.engine import run_document_rules, REQUIRED_CLAUSES
+from app.rules.engine import run_document_rules, REQUIRED_CLAUSES, _FALLBACK
 from app.segmentation.clause_service import segment_clauses
 from app.services.legal_llm_service import build_legal_llm, _summary_prompt
 from typing import Any
@@ -26,27 +27,13 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 settings = get_settings()
 
 
-def _calculate_risk(findings: list[Finding], clauses: list[ClauseSegment]) -> tuple[int, str]:
-    """Calculate a risk score (0-100) and risk level based on findings and clause coverage."""
+def _calculate_risk(findings: list[Finding], clauses: list[ClauseSegment], doc_type: str = "general") -> tuple[int, str]:
+    """Calculate a risk score (0-100) weighted by document type."""
     score = 0
-    clause_types = {c.clause_type for c in clauses}
-    total_required = len(REQUIRED_CLAUSES)
-    missing_count = len(REQUIRED_CLAUSES - clause_types)
 
-    # Missing clauses: up to 60 points
-    if total_required > 0:
-        score += int((missing_count / total_required) * 60)
-
-    # Each finding adds risk
+    severity_weights = {"high": 12, "medium": 6, "low": 3, "review_recommended": 4}
     for f in findings:
-        if f.finding_type == "missing_clause":
-            score += 3
-        elif f.finding_type == "missing_jurisdiction":
-            score += 8
-        elif f.finding_type == "missing_date":
-            score += 5
-        else:
-            score += 2
+        score += severity_weights.get(f.severity, 4)
 
     score = min(score, 100)
 
@@ -96,7 +83,8 @@ async def analyze_document_rules(file: UploadFile = File(...)) -> list[Finding]:
     extracted = await extract_document(file)
     clauses = [ClauseSegment.model_validate(clause) for clause in segment_clauses(extracted)]
     text = "\n".join(page.text for page in extracted.pages)
-    return await run_document_rules(text, clauses, settings)
+    findings, doc_type = run_document_rules(text, clauses)
+    return findings
 
 
 def _persisted_response(document: Document) -> PersistedDocument:
@@ -136,9 +124,9 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
 
     clauses = [ClauseSegment.model_validate(clause) for clause in segment_clauses(extracted)]
     text = "\n".join(page.text for page in extracted.pages)
-    findings = await run_document_rules(text, clauses, settings)
+    findings, doc_type = run_document_rules(text, clauses)
     content_sha256 = hashlib.sha256(content).hexdigest()
-    risk_score, risk_level = _calculate_risk(findings, clauses)
+    risk_score, risk_level = _calculate_risk(findings, clauses, doc_type)
     create_tables()
 
     with SessionLocal.begin() as database:
@@ -194,6 +182,7 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
             findings=findings,
             risk_score=risk_score,
             risk_level=risk_level,
+            doc_type=doc_type,
         )
 
 
@@ -283,14 +272,22 @@ async def summarize_document(document_id: str) -> dict[str, str]:
 
 @router.get("/{document_id}/clause-coverage")
 def get_clause_coverage(document_id: str) -> dict[str, Any]:
-    """Return which required clauses are present vs missing."""
+    """Return which required clauses are present vs missing, using both DB clauses and regex fallback."""
     with SessionLocal() as database:
         document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
         if document is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
         clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
+        # Reconstruct full text from clause text for fallback matching
+        full_text = " ".join(c.text for c in document.clauses)
 
     detected = {c.clause_type for c in clauses}
+    # Apply regex fallback same as rules engine
+    for clause_type, pattern in _FALLBACK.items():
+        if clause_type not in detected:
+            if re.search(pattern, full_text, re.IGNORECASE):
+                detected.add(clause_type)
+
     coverage = []
     for clause_type in sorted(REQUIRED_CLAUSES):
         coverage.append({
@@ -307,6 +304,75 @@ def get_clause_coverage(document_id: str) -> dict[str, Any]:
         "coverage_percent": round(present_count / len(REQUIRED_CLAUSES) * 100) if REQUIRED_CLAUSES else 0,
         "clauses": coverage,
     }
+
+
+@router.post("/compare")
+async def compare_documents(file1: UploadFile = File(...), file2: UploadFile = File(...)) -> dict[str, Any]:
+    """Compare two legal documents side by side."""
+    content1 = await file1.read()
+    content2 = await file2.read()
+
+    try:
+        doc1 = extract_digital_pdf(content1, file1.filename or "document1.pdf")
+        doc2 = extract_digital_pdf(content2, file2.filename or "document2.pdf")
+    except PDFIngestionError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+
+    clauses1 = [ClauseSegment.model_validate(c) for c in segment_clauses(doc1)]
+    clauses2 = [ClauseSegment.model_validate(c) for c in segment_clauses(doc2)]
+    text1 = "\n".join(p.text for p in doc1.pages)
+    text2 = "\n".join(p.text for p in doc2.pages)
+
+    findings1, type1 = run_document_rules(text1, clauses1)
+    findings2, type2 = run_document_rules(text2, clauses2)
+    risk1, level1 = _calculate_risk(findings1, clauses1, type1)
+    risk2, level2 = _calculate_risk(findings2, clauses2, type2)
+
+    types1 = {c.clause_type for c in clauses1}
+    types2 = {c.clause_type for c in clauses2}
+    # Also apply fallback
+    for ct, pat in _FALLBACK.items():
+        if ct not in types1 and re.search(pat, text1, re.IGNORECASE):
+            types1.add(ct)
+        if ct not in types2 and re.search(pat, text2, re.IGNORECASE):
+            types2.add(ct)
+
+    clause_comparison = []
+    all_types = sorted(types1 | types2 | REQUIRED_CLAUSES)
+    for ct in all_types:
+        clause_comparison.append({
+            "clause": ct,
+            "label": ct.replace("_", " ").title(),
+            "in_doc1": ct in types1,
+            "in_doc2": ct in types2,
+        })
+
+    return {
+        "doc1": {"filename": doc1.filename, "pages": doc1.page_count, "doc_type": type1, "risk_score": risk1, "risk_level": level1, "findings_count": len(findings1)},
+        "doc2": {"filename": doc2.filename, "pages": doc2.page_count, "doc_type": type2, "risk_score": risk2, "risk_level": level2, "findings_count": len(findings2)},
+        "clause_comparison": clause_comparison,
+    }
+
+
+@router.get("/history/all")
+def get_document_history() -> list[dict[str, Any]]:
+    """Return all previously analyzed documents."""
+    with SessionLocal() as database:
+        documents = database.scalars(
+            select(Document).where(Document.deleted_at.is_(None)).order_by(Document.created_at.desc())
+        ).all()
+
+    return [
+        {
+            "id": doc.id,
+            "filename": doc.filename,
+            "status": doc.status,
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "findings_count": len(doc.findings),
+            "clauses_count": len(doc.clauses),
+        }
+        for doc in documents
+    ]
 
 
 @router.get("/sources", response_model=list[LlmEvidenceSource])

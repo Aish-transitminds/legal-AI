@@ -1,9 +1,7 @@
 import re
-import json
 
 from app.schemas.clauses import ClauseSegment
 from app.schemas.findings import Finding
-from app.services.legal_llm_service import build_legal_llm
 
 REQUIRED_CLAUSES = {
     "parties",
@@ -16,125 +14,120 @@ REQUIRED_CLAUSES = {
     "dispute_resolution",
 }
 
-# Regex fallbacks as a first pass
-CLAUSE_FALLBACK_PATTERNS = {
-    "parties": r"\b(?:between|lessor|lessee|landlord|tenant|buyer|seller|parties hereto)\b",
-    "term": r"\b(?:for a term of|duration of|period of|commencing on|shall remain in force)\b",
-    "confidentiality": r"\b(?:confidential|non-disclosure|secrecy)\b",
-    "termination": r"\b(?:terminate|termination|determination of this demise|re-entry|re-enter|cancel)\b",
-    "notice": r"\b(?:notice in writing|written notice|serve notice)\b",
-    "governing_law": r"\b(?:governed by|construed in accordance with|laws of)\b",
-    "jurisdiction": r"\b(?:jurisdiction|venue|courts? of)\b",
-    "dispute_resolution": r"\b(?:arbitration|arbitrator|mediate|dispute resolution)\b",
+# Broad regex fallbacks that catch old-style Indian drafting
+_FALLBACK = {
+    "parties": r"\b(?:between|lessor|lessee|landlord|tenant|licensor|licensee|buyer|seller|vendor|vendee|first party|second party|party of the first part|witnesseth|whereas.*hereinafter)\b",
+    "term": r"\b(?:for a term of|duration of|period of|commencing on|shall remain in force|tenure|from the date|years from)\b",
+    "confidentiality": r"\b(?:confidential|non-disclosure|secrecy|proprietary information)\b",
+    "termination": r"\b(?:terminat|determination of this demise|re-entry|re-enter|cancel|revok|expiry of|surrender)\b",
+    "notice": r"\b(?:notice in writing|written notice|serve notice|days.? notice|notice period|prior notice)\b",
+    "governing_law": r"\b(?:governed by|construed in accordance with|laws of|subject to the laws)\b",
+    "jurisdiction": r"\b(?:jurisdiction|venue|courts? of|exclusive jurisdiction)\b",
+    "dispute_resolution": r"\b(?:arbitrat|mediat|dispute.?resolution|conciliation|resolved amicably)\b",
 }
 
 
-async def run_document_rules(text: str, clauses: list[ClauseSegment], settings) -> list[Finding]:
+def _detect_doc_type(text: str) -> str:
+    """Detect the broad document type from text content."""
+    lower = text.lower()
+    if re.search(r"\b(?:lease|rent|lessor|lessee|tenant|demise|premises)\b", lower):
+        return "lease"
+    if re.search(r"\b(?:non-disclosure|nda|confidential information|disclosing party|receiving party)\b", lower):
+        return "nda"
+    if re.search(r"\b(?:employ|salary|compensation|probation|designation|human resource)\b", lower):
+        return "employment"
+    if re.search(r"\b(?:sale deed|conveyance|absolute sale|purchase price|immovable property)\b", lower):
+        return "sale_deed"
+    if re.search(r"\b(?:service agreement|scope of work|deliverables|service provider|client)\b", lower):
+        return "service_agreement"
+    return "general"
+
+
+# Clauses that are NOT expected in certain doc types (so don't penalize)
+_CLAUSE_EXCEPTIONS: dict[str, set[str]] = {
+    "lease": {"confidentiality"},
+    "nda": {"notice"},
+    "employment": set(),
+    "sale_deed": {"confidentiality", "notice"},
+    "service_agreement": set(),
+    "general": set(),
+}
+
+
+def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]:
+    doc_type = _detect_doc_type(text)
+    exceptions = _CLAUSE_EXCEPTIONS.get(doc_type, set())
+
     clause_types = {clause.clause_type for clause in clauses}
-    
-    # 1. Regex Fallback Pass
-    for clause_type, pattern in CLAUSE_FALLBACK_PATTERNS.items():
+
+    # Regex fallback: scan full text for patterns the heading-based segmenter missed
+    for clause_type, pattern in _FALLBACK.items():
         if clause_type not in clause_types:
             if re.search(pattern, text, re.IGNORECASE):
                 clause_types.add(clause_type)
 
-    # 2. LLM Hybrid Pass (Ask AI to find what the rules missed)
-    missing_from_rules = REQUIRED_CLAUSES - clause_types
-    llm_found_clauses = set()
-    
-    if missing_from_rules:
-        prompt = (
-            "You are an expert legal AI. Analyze the following document text and determine if any of "
-            "these specific legal concepts are present, regardless of what headings are used.\n\n"
-            f"Concepts to look for: {', '.join(missing_from_rules)}\n\n"
-            "Return ONLY a valid JSON array of objects. Each object must have:\n"
-            '- "clause_type": the string name of the concept\n'
-            '- "present": boolean true or false\n'
-            '- "evidence_quote": A short quote proving its presence, or null\n\n'
-            f"DOCUMENT TEXT (first 10000 chars):\n{text[:10000]}"
-        )
-        
-        try:
-            provider = build_legal_llm(settings)
-            llm_response = await provider.generate_text(prompt)
-            await provider.client.aclose()
-            
-            cleaned = llm_response.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.strip("`").removeprefix("json").strip()
-            
-            llm_results = json.loads(cleaned)
-            for item in llm_results:
-                if item.get("present") and item.get("clause_type") in missing_from_rules:
-                    llm_found_clauses.add(item.get("clause_type"))
-        except Exception as e:
-            # If LLM fails, we gracefully fall back to just the regex rules
-            pass
-
-    # Merge LLM findings with Rule findings
-    final_detected_clauses = clause_types | llm_found_clauses
     findings: list[Finding] = []
 
-    # Flag missing clauses ONLY if both rules AND LLM found nothing
-    for clause_type in sorted(REQUIRED_CLAUSES - final_detected_clauses):
+    # Only flag clauses that are BOTH missing AND expected for this doc type
+    actually_missing = (REQUIRED_CLAUSES - clause_types) - exceptions
+    for clause_type in sorted(actually_missing):
         findings.append(
             Finding(
                 finding_type="missing_clause",
-                document_fact=f"No {clause_type.replace('_', ' ')} clause was detected.",
-                ai_interpretation="Review Recommended: the document may need human review for this missing section.",
+                severity="high" if clause_type in {"governing_law", "jurisdiction", "dispute_resolution"} else "medium",
+                document_fact=f"No {clause_type.replace('_', ' ')} clause was detected in this {doc_type.replace('_', ' ')}.",
+                ai_interpretation=f"Review Recommended: a {clause_type.replace('_', ' ')} clause is typically expected in a {doc_type.replace('_', ' ')} agreement.",
             )
         )
 
-    # Standard Date & Jurisdiction checks
-    if not re.search(r"\b(?:effective|execution|dated|date)\b", text, re.IGNORECASE):
+    # Date check
+    if not re.search(r"\b(?:effective|execution|executed on|dated|day of|date of)\b", text, re.IGNORECASE):
         findings.append(
             Finding(
                 finding_type="missing_date",
-                document_fact="No effective, execution, or date language was detected.",
+                severity="medium",
+                document_fact="No effective or execution date language was detected.",
                 ai_interpretation="Review Recommended: confirm the agreement date manually.",
             )
         )
 
-    if "jurisdiction" not in final_detected_clauses and not re.search(
-        r"\bjurisdiction\b|\bvenue\b|\bcourts?\b", text, re.IGNORECASE
-    ):
-        findings.append(
-            Finding(
-                finding_type="missing_jurisdiction",
-                document_fact="No jurisdiction, venue, or court language was detected.",
-                ai_interpretation="Review Recommended: confirm the intended forum manually.",
-            )
-        )
-
-    # Dynamic Document-Type Checks (Indian Lease Context)
-    is_lease = bool(re.search(r"\b(?:lease|rent|lessor|lessee|tenant|demise)\b", text, re.IGNORECASE))
-    if is_lease:
-        if not re.search(r"\b(?:register|registration|registered)\b", text, re.IGNORECASE):
+    # Indian Lease-specific checks
+    if doc_type == "lease":
+        if not re.search(r"\b(?:register|registration|registered|sub-registrar)\b", text, re.IGNORECASE):
             findings.append(
                 Finding(
-                    finding_type="missing_registration_clause",
+                    finding_type="missing_registration",
                     severity="high",
-                    document_fact="No registration clause detected.",
-                    ai_interpretation="Review Recommended: In India, leases exceeding 11 months must be registered under the Registration Act. Verify if this applies.",
+                    document_fact="No registration clause detected in this lease deed.",
+                    ai_interpretation="Review Recommended: under the Indian Registration Act 1908, leases exceeding 11 months must be registered.",
                 )
             )
-        if not re.search(r"\b(?:stamp duty|stamped)\b", text, re.IGNORECASE):
+        if not re.search(r"\b(?:stamp duty|stamp paper|stamped|non-judicial stamp)\b", text, re.IGNORECASE):
             findings.append(
                 Finding(
                     finding_type="missing_stamp_duty",
                     severity="medium",
                     document_fact="No stamp duty provision detected.",
-                    ai_interpretation="Review Recommended: Ensure adequate stamp duty is paid as per state laws to ensure the deed's admissibility in court.",
+                    ai_interpretation="Review Recommended: ensure adequate stamp duty is paid per state laws for the deed's admissibility.",
                 )
             )
-        if not re.search(r"\b(?:security deposit|deposit)\b", text, re.IGNORECASE):
+        if not re.search(r"\b(?:security deposit|earnest|caution deposit)\b", text, re.IGNORECASE):
             findings.append(
                 Finding(
                     finding_type="missing_security_deposit",
                     severity="medium",
                     document_fact="No security deposit terms detected.",
-                    ai_interpretation="Review Recommended: Leases typically include security deposit, lock-in, and rent escalation clauses for commercial protection.",
+                    ai_interpretation="Review Recommended: lease agreements typically include security deposit, lock-in period and rent escalation clauses.",
+                )
+            )
+        if not re.search(r"\b(?:escalat|increase|revision|hike|increment).*\b(?:rent|lease)\b|\b(?:rent|lease).*\b(?:escalat|increase|revision|hike)\b", text, re.IGNORECASE):
+            findings.append(
+                Finding(
+                    finding_type="missing_rent_escalation",
+                    severity="low",
+                    document_fact="No rent escalation clause detected.",
+                    ai_interpretation="Review Recommended: consider adding periodic rent revision terms to protect against inflation.",
                 )
             )
 
-    return findings
+    return findings, doc_type
