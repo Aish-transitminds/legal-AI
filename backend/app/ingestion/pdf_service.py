@@ -37,13 +37,16 @@ def extract_digital_pdf(content: bytes, filename: str) -> ExtractedDocument:
     finally:
         document.close()
 
-    total_extracted_text = sum(len(page.text) for page in pages)
-    if total_extracted_text < 50:
-        raise PDFIngestionError("This appears to be a scanned PDF. Only digital (text-based) PDFs are supported. Please use a digitally-created PDF or run OCR on the scanned document first.")
-
     if not pages or not any(page.text for page in pages):
         raise PDFIngestionError(
-            "No digital text was found. Scanned PDFs and OCR are outside MVP v1."
+            "No digital text was found in this PDF. Scanned PDFs are not supported; please use a digitally-created PDF."
+        )
+
+    total_extracted_text = sum(len(page.text) for page in pages)
+    if total_extracted_text < 10:
+        raise PDFIngestionError(
+            "This appears to be a scanned PDF. Only digital (text-based) PDFs are supported. "
+            "Please use a digitally-created PDF or run OCR on the scanned document first."
         )
 
     return ExtractedDocument(filename=filename, page_count=len(pages), pages=pages)

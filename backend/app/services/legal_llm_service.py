@@ -237,49 +237,57 @@ class OpenAICompatibleProvider(LegalLLM):
         self.model = model
         self.client = client or httpx.AsyncClient(timeout=timeout)
 
+    async def _post_with_retry(self, endpoint: str, json_body: dict[str, Any]) -> httpx.Response:
+        import asyncio
+        for attempt in range(3):
+            response = await self.client.post(
+                f"{self.base_url}{endpoint}",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=json_body,
+            )
+            if response.status_code == 429 and attempt < 2:
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s
+                continue
+            response.raise_for_status()
+            return response
+            
     async def explain_finding(
         self, finding: Finding, sources: list[EvidenceSource]
     ) -> FindingExplanation:
         if sources:
             prompt = _prompt(finding, sources)
-            response = await self.client.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
+            response = await self._post_with_retry(
+                "/chat/completions",
+                {
                     "model": self.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0,
                 },
             )
-            response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             return _validate_citations(_parse_json(content), finding, sources)
         else:
             prompt = _general_prompt(finding)
-            response = await self.client.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
+            response = await self._post_with_retry(
+                "/chat/completions",
+                {
                     "model": self.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0,
                 },
             )
-            response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             return _parse_general_response(content, finding)
 
     async def generate_text(self, prompt: str) -> str:
-        response = await self.client.post(
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
+        response = await self._post_with_retry(
+            "/chat/completions",
+            {
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
             },
         )
-        response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
 
 

@@ -40,61 +40,109 @@ FALLBACK_PATTERNS: tuple[tuple[str, str], ...] = (
     ("dispute_resolution", r"\b(?:arbitration|arbitrator|mediate|dispute resolution)\b"),
 )
 
+
 def _classify_heading(line: str) -> str | None:
-    normalized = re.sub(r"^[\s\d.()\-]+", "", line.lower()).strip(" :")
+    """Return a clause_type if `line` looks like a section heading, else None.
+
+    Strips common numbering prefixes (e.g. "1.", "2.1", "(a)", "Article 2.") before
+    matching, so that "1. Parties" and "3. Governing Law" are correctly classified.
+    Only considers lines up to 100 characters (headings are rarely longer).
+    """
+    stripped_line = line.strip()
+    # Only consider short lines as potential headings
+    if not stripped_line or len(stripped_line) > 100:
+        return None
+
+    # Normalize: remove leading section numbers / bullet marks, lowercase, strip colons
+    # Handles: "1.", "1.1.", "(a)", "Article 2 -", "SECTION 3:"
+    normalized = re.sub(
+        r"^(?:article|section|clause|para(?:graph)?|schedule)?\s*[\d.]+\s*[-.):]?\s*",
+        "",
+        stripped_line.lower(),
+        flags=re.IGNORECASE,
+    ).strip(": ")
+
+    if not normalized:
+        # Fall back to the full line text without numbering
+        normalized = re.sub(r"^[\s\d.()\[\]-]+", "", stripped_line.lower()).strip(": ")
+
+    if not normalized:
+        return None
+
     for clause_type, pattern in _HEADING_PATTERNS:
-        if re.fullmatch(pattern, normalized) or re.match(rf"^{pattern}\s*[:\-]", normalized):
+        if re.fullmatch(pattern, normalized) or re.match(rf"^(?:{pattern})\s*[:\-]?$", normalized):
             return clause_type
+
     return None
 
-def segment_clauses(document: ExtractedDocument) -> list[dict[str, object]]:
-    segments: list[dict[str, object]] = []
-    
-    for page in document.pages:
-        # Group text into paragraphs
-        paragraphs = []
-        current_paragraph = []
-        for line in page.text.splitlines():
-            line = line.strip()
-            if not line:
-                if current_paragraph:
-                    paragraphs.append(" ".join(current_paragraph))
-                    current_paragraph = []
-            else:
-                current_paragraph.append(line)
-        if current_paragraph:
-            paragraphs.append(" ".join(current_paragraph))
 
+def segment_clauses(document: ExtractedDocument) -> list[dict[str, object]]:
+    """Segment a document into typed clause dictionaries.
+
+    Strategy:
+    1. Process the document line-by-line so that even when PyMuPDF returns all
+       text in a single block (the common case for simple PDFs), we still detect
+       section headings on individual lines.
+    2. When a heading is detected, flush the current accumulator and start a new
+       section under the detected clause type.
+    3. As a fallback, apply regex patterns against the accumulated body text to
+       re-classify sections that were missed by heading detection.
+    """
+    segments: list[dict[str, object]] = []
+
+    for page in document.pages:
         current_type: str = "miscellaneous"
         current_lines: list[str] = []
 
         def flush() -> None:
-            if current_lines:
+            nonlocal current_type, current_lines
+            text = "\n".join(current_lines).strip()
+            if text:
                 segments.append(
                     {
                         "clause_type": current_type,
-                        "text": "\n\n".join(current_lines).strip(),
+                        "text": text,
                         "page_number": page.page_number,
                     }
                 )
+            current_lines = []
 
-        for para in paragraphs:
-            # 1. Try strict heading
-            heading_type = _classify_heading(para)
-            if not heading_type:
-                # 2. Try regex fallback on the paragraph body
-                for ctype, pattern in FALLBACK_PATTERNS:
-                    if re.search(pattern, para, re.IGNORECASE):
-                        heading_type = ctype
-                        break
-            
+        for raw_line in page.text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue  # Skip blank lines
+
+            heading_type = _classify_heading(line)
             if heading_type and heading_type != current_type:
+                # New section heading found → flush previous section
                 flush()
                 current_type = heading_type
-                current_lines = [para]
+                # Don't include the heading line itself in the body text
+                # (it's identified by clause_type already)
             else:
-                current_lines.append(para)
+                current_lines.append(line)
 
         flush()
 
-    return segments
+    # Post-process: re-classify any "miscellaneous" segments using fallback patterns
+    for segment in segments:
+        if segment["clause_type"] == "miscellaneous":
+            text = str(segment["text"])
+            for ctype, pattern in FALLBACK_PATTERNS:
+                if re.search(pattern, text, re.IGNORECASE):
+                    segment["clause_type"] = ctype
+                    break
+
+    # Merge consecutive segments of the same type (can happen with multi-paragraph sections)
+    if not segments:
+        return segments
+
+    merged: list[dict[str, object]] = [segments[0]]
+    for seg in segments[1:]:
+        last = merged[-1]
+        if seg["clause_type"] == last["clause_type"] and seg["page_number"] == last["page_number"]:
+            last["text"] = str(last["text"]) + "\n\n" + str(seg["text"])
+        else:
+            merged.append(seg)
+
+    return merged

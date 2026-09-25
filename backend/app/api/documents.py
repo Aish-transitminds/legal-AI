@@ -1,41 +1,64 @@
 import hashlib
 import asyncio
+import logging
 import re
+from typing import Any
 
 import httpx
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Body, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.db import SessionLocal, create_tables
+from app.db import SessionLocal
 from app.ingestion.pdf_service import PDFIngestionError, extract_digital_pdf
 from app.models import Clause, Document, LegalFinding, LegalSource
 from app.schemas.clauses import ClauseSegment
 from app.schemas.documents import PersistedDocument
 from app.schemas.findings import Finding
 from app.schemas.ingestion import ExtractedDocument
-from app.schemas.llm import EvidenceSource, FindingExplanation
+from app.schemas.llm import EvidenceSource, FindingExplanation, EvidenceSource as LlmEvidenceSource
 from app.retrieval.retriever import HybridRetriever, SourceRecord
 from app.rules.engine import run_document_rules, REQUIRED_CLAUSES, _FALLBACK
 from app.segmentation.clause_service import segment_clauses
 from app.services.legal_llm_service import build_legal_llm, _summary_prompt
-from typing import Any
-from app.schemas.llm import EvidenceSource as LlmEvidenceSource
 from app.rules.indian_compliance import get_supported_states, get_state_compliance
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 settings = get_settings()
 
+# Input validation constants
+_MAX_QUESTION_LENGTH = 2000
+_MAX_CLAUSE_TEXT_LENGTH = 10000
+_MAX_CLAUSE_TYPE_LENGTH = 100
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _validate_pdf_upload(file: UploadFile, content: bytes) -> None:
+    """Raise HTTPException for invalid PDF uploads (type or size)."""
+    if file.content_type not in {"application/pdf", "application/octet-stream"}:
+        # Also accept octet-stream since some browsers send PDFs that way
+        if not (file.filename or "").lower().endswith(".pdf"):
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Only PDF files are supported.",
+            )
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds the {settings.max_upload_size_mb} MB upload limit.",
+        )
+
 
 def _calculate_risk(findings: list[Finding], clauses: list[ClauseSegment], doc_type: str = "general") -> tuple[int, str]:
-    """Calculate a risk score (0-100) weighted by document type."""
-    score = 0
-
+    """Calculate a risk score (0–100) weighted by severity."""
     severity_weights = {"high": 12, "medium": 6, "low": 3, "review_recommended": 4}
-    for f in findings:
-        score += severity_weights.get(f.severity, 4)
-
-    score = min(score, 100)
+    score = min(sum(severity_weights.get(f.severity, 4) for f in findings), 100)
 
     if score >= 60:
         level = "high"
@@ -45,46 +68,6 @@ def _calculate_risk(findings: list[Finding], clauses: list[ClauseSegment], doc_t
         level = "low"
 
     return score, level
-
-
-@router.post("/extract", response_model=ExtractedDocument)
-async def extract_document(file: UploadFile = File(...)) -> ExtractedDocument:
-    if file.content_type != "application/pdf":
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Only digital PDF files are supported in MVP v1.",
-        )
-
-    content = await file.read()
-    max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    if len(content) > max_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds the {settings.max_upload_size_mb} MB upload limit.",
-        )
-
-    try:
-        return extract_digital_pdf(content, file.filename or "uploaded.pdf")
-    except PDFIngestionError as error:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(error),
-        ) from error
-
-
-@router.post("/segment", response_model=list[ClauseSegment])
-async def segment_document(file: UploadFile = File(...)) -> list[ClauseSegment]:
-    extracted = await extract_document(file)
-    return [ClauseSegment.model_validate(clause) for clause in segment_clauses(extracted)]
-
-
-@router.post("/rules", response_model=list[Finding])
-async def analyze_document_rules(file: UploadFile = File(...)) -> list[Finding]:
-    extracted = await extract_document(file)
-    clauses = [ClauseSegment.model_validate(clause) for clause in segment_clauses(extracted)]
-    text = "\n".join(page.text for page in extracted.pages)
-    findings, doc_type = run_document_rules(text, clauses)
-    return findings
 
 
 def _persisted_response(document: Document) -> PersistedDocument:
@@ -107,15 +90,53 @@ def _persisted_response(document: Document) -> PersistedDocument:
     )
 
 
+def _get_document_or_404(database, document_id: str) -> Document:
+    """Fetch a non-deleted document by ID or raise 404."""
+    document = database.scalar(
+        select(Document).where(Document.id == document_id, Document.deleted_at.is_(None))
+    )
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    return document
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post("/extract", response_model=ExtractedDocument)
+async def extract_document(file: UploadFile = File(...)) -> ExtractedDocument:
+    content = await file.read()
+    _validate_pdf_upload(file, content)
+    try:
+        return extract_digital_pdf(content, file.filename or "uploaded.pdf")
+    except PDFIngestionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+
+
+@router.post("/segment", response_model=list[ClauseSegment])
+async def segment_document(file: UploadFile = File(...)) -> list[ClauseSegment]:
+    extracted = await extract_document(file)
+    return [ClauseSegment.model_validate(clause) for clause in segment_clauses(extracted)]
+
+
+@router.post("/rules", response_model=list[Finding])
+async def analyze_document_rules(file: UploadFile = File(...)) -> list[Finding]:
+    extracted = await extract_document(file)
+    clauses = [ClauseSegment.model_validate(clause) for clause in segment_clauses(extracted)]
+    text = "\n".join(page.text for page in extracted.pages)
+    findings, _doc_type = run_document_rules(text, clauses)
+    return findings
+
+
 @router.post("/analyze", response_model=PersistedDocument)
 async def analyze_and_persist_document(file: UploadFile = File(...)) -> PersistedDocument:
-    if file.content_type != "application/pdf":
-        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Only PDF files are supported.")
-
     content = await file.read()
-    max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    if len(content) > max_bytes:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File exceeds upload limit.")
+    _validate_pdf_upload(file, content)
 
     try:
         extracted = extract_digital_pdf(content, file.filename or "uploaded.pdf")
@@ -127,7 +148,6 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
     findings, doc_type = run_document_rules(text, clauses)
     content_sha256 = hashlib.sha256(content).hexdigest()
     risk_score, risk_level = _calculate_risk(findings, clauses, doc_type)
-    create_tables()
 
     with SessionLocal.begin() as database:
         existing = database.scalar(
@@ -149,7 +169,15 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
         database.add(document)
         database.flush()
         database.add_all(
-            [Clause(document_id=document.id, clause_type=clause.clause_type, text=clause.text, page_number=clause.page_number) for clause in clauses]
+            [
+                Clause(
+                    document_id=document.id,
+                    clause_type=clause.clause_type,
+                    text=clause.text,
+                    page_number=clause.page_number,
+                )
+                for clause in clauses
+            ]
         )
         database.add_all(
             [
@@ -180,9 +208,7 @@ async def analyze_and_persist_document(file: UploadFile = File(...)) -> Persiste
 @router.post("/{document_id}/explain", response_model=list[FindingExplanation])
 async def explain_document_findings(document_id: str) -> list[FindingExplanation]:
     with SessionLocal() as database:
-        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
-        if document is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        document = _get_document_or_404(database, document_id)
         findings = [Finding.model_validate(finding.__dict__) for finding in document.findings]
         sources = database.scalars(select(LegalSource)).all()
 
@@ -191,6 +217,7 @@ async def explain_document_findings(document_id: str) -> list[FindingExplanation
         for source in sources
     ]
     retriever = HybridRetriever(source_records) if source_records else None
+
     try:
         provider = build_legal_llm(settings)
     except ValueError as error:
@@ -205,20 +232,24 @@ async def explain_document_findings(document_id: str) -> list[FindingExplanation
             ]
             return await provider.explain_finding(finding, evidence)
         except Exception:
-            # If one finding fails, return a fallback instead of crashing everything
+            logger.warning("AI explanation failed for finding '%s'; returning fallback", finding.finding_type)
             return FindingExplanation(
                 status="AI_ANALYZED",
                 document_fact=finding.document_fact,
-                ai_interpretation=f"Review Recommended: {finding.document_fact} This may require human legal review to assess its implications for your agreement.",
+                ai_interpretation=(
+                    f"Review Recommended: {finding.document_fact} "
+                    "This may require human legal review to assess its implications."
+                ),
                 citations=[],
             )
 
     try:
         explanations = list(await asyncio.gather(*(explain_one(finding) for finding in findings)))
     except Exception as error:
+        logger.error("AI explanation batch failed: %s", error)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"AI service is temporarily unavailable: {error}",
+            detail="AI service is temporarily unavailable. Please try again later.",
         ) from error
     finally:
         await provider.client.aclose()
@@ -230,16 +261,12 @@ async def explain_document_findings(document_id: str) -> list[FindingExplanation
 async def summarize_document(document_id: str) -> dict[str, str]:
     """Generate an AI-powered plain-English summary of the analyzed document."""
     with SessionLocal() as database:
-        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
-        if document is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        document = _get_document_or_404(database, document_id)
         clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
         findings = [Finding.model_validate(f.__dict__) for f in document.findings]
 
     clauses_info = "\n".join(f"- {c.clause_type}: {c.text[:150]}..." for c in clauses) or "No clauses detected."
     findings_info = "\n".join(f"- [{f.finding_type}] {f.document_fact}" for f in findings) or "No findings."
-
-    # Get clause text for summary
     full_text = "\n".join(c.text for c in clauses) if clauses else "No text extracted."
 
     try:
@@ -251,9 +278,10 @@ async def summarize_document(document_id: str) -> dict[str, str]:
         prompt = _summary_prompt(full_text, clauses_info, findings_info)
         summary = await provider.generate_text(prompt)
     except Exception as error:
+        logger.error("Summary generation failed: %s", error)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"AI service is temporarily unavailable: {error}",
+            detail="AI service is temporarily unavailable. Please try again later.",
         ) from error
     finally:
         await provider.client.aclose()
@@ -265,27 +293,23 @@ async def summarize_document(document_id: str) -> dict[str, str]:
 def get_clause_coverage(document_id: str) -> dict[str, Any]:
     """Return which required clauses are present vs missing, using both DB clauses and regex fallback."""
     with SessionLocal() as database:
-        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
-        if document is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        document = _get_document_or_404(database, document_id)
         clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
-        # Reconstruct full text from clause text for fallback matching
         full_text = " ".join(c.text for c in document.clauses)
 
     detected = {c.clause_type for c in clauses}
-    # Apply regex fallback same as rules engine
     for clause_type, pattern in _FALLBACK.items():
-        if clause_type not in detected:
-            if re.search(pattern, full_text, re.IGNORECASE):
-                detected.add(clause_type)
+        if clause_type not in detected and re.search(pattern, full_text, re.IGNORECASE):
+            detected.add(clause_type)
 
-    coverage = []
-    for clause_type in sorted(REQUIRED_CLAUSES):
-        coverage.append({
+    coverage = [
+        {
             "clause": clause_type,
             "label": clause_type.replace("_", " ").title(),
             "present": clause_type in detected,
-        })
+        }
+        for clause_type in sorted(REQUIRED_CLAUSES)
+    ]
 
     present_count = sum(1 for c in coverage if c["present"])
     return {
@@ -298,16 +322,22 @@ def get_clause_coverage(document_id: str) -> dict[str, Any]:
 
 
 @router.post("/{document_id}/chat")
-async def chat_with_document(document_id: str, body: dict[str, str] = {}) -> dict[str, Any]:
+async def chat_with_document(
+    document_id: str,
+    body: dict[str, str] = Body(default={}),
+) -> dict[str, Any]:
     """Ask a question about the document, answered from its clauses only."""
     question = body.get("question", "").strip()
     if not question:
-        raise HTTPException(status_code=400, detail="Question is required.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Question is required.")
+    if len(question) > _MAX_QUESTION_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Question must not exceed {_MAX_QUESTION_LENGTH} characters.",
+        )
 
     with SessionLocal() as database:
-        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
-        if document is None:
-            raise HTTPException(status_code=404, detail="Document not found.")
+        document = _get_document_or_404(database, document_id)
         clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
 
     clauses_text = "\n\n".join(f"[{c.clause_type.upper()}]: {c.text}" for c in clauses)
@@ -324,21 +354,28 @@ async def chat_with_document(document_id: str, body: dict[str, str] = {}) -> dic
             return {"answer": parsed.get("answer", raw), "source_clauses": parsed.get("source_clauses", [])}
         except Exception:
             return {"answer": raw.strip(), "source_clauses": []}
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"AI service error: {e}")
+    except Exception as error:
+        logger.error("Chat endpoint error: %s", error)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI service is temporarily unavailable. Please try again later.",
+        )
 
 
 @router.post("/{document_id}/draft-clause")
-async def draft_clause(document_id: str, body: dict[str, str] = {}) -> dict[str, Any]:
+async def draft_clause(
+    document_id: str,
+    body: dict[str, str] = Body(default={}),
+) -> dict[str, Any]:
     """AI-generate a suggested clause for a missing clause type."""
     clause_type = body.get("clause_type", "").strip()
     if not clause_type:
-        raise HTTPException(status_code=400, detail="clause_type is required.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="clause_type is required.")
+    if len(clause_type) > _MAX_CLAUSE_TYPE_LENGTH:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="clause_type is too long.")
 
     with SessionLocal() as database:
-        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
-        if document is None:
-            raise HTTPException(status_code=404, detail="Document not found.")
+        document = _get_document_or_404(database, document_id)
         clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
 
     existing_text = "\n".join(f"- {c.clause_type}: {c.text[:200]}" for c in clauses) or "No existing clauses."
@@ -355,16 +392,28 @@ async def draft_clause(document_id: str, body: dict[str, str] = {}) -> dict[str,
             "drafted_text": drafted.strip(),
             "disclaimer": "AI-generated draft. Must be reviewed and customized by a qualified legal professional before use.",
         }
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"AI service error: {e}")
+    except Exception as error:
+        logger.error("Draft clause error: %s", error)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI service is temporarily unavailable. Please try again later.",
+        )
 
 
 @router.post("/{document_id}/simplify-clause")
-async def simplify_clause(document_id: str, body: dict[str, str] = {}) -> dict[str, str]:
+async def simplify_clause(
+    document_id: str,
+    body: dict[str, str] = Body(default={}),
+) -> dict[str, str]:
     """Rewrite a legal clause in plain English."""
     clause_text = body.get("clause_text", "").strip()
     if not clause_text:
-        raise HTTPException(status_code=400, detail="clause_text is required.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="clause_text is required.")
+    if len(clause_text) > _MAX_CLAUSE_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"clause_text must not exceed {_MAX_CLAUSE_TEXT_LENGTH} characters.",
+        )
 
     try:
         provider = build_legal_llm(settings)
@@ -373,17 +422,19 @@ async def simplify_clause(document_id: str, body: dict[str, str] = {}) -> dict[s
         simplified = await provider.generate_text(prompt)
         await provider.client.aclose()
         return {"simple_text": simplified.strip()}
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"AI service error: {e}")
+    except Exception as error:
+        logger.error("Simplify clause error: %s", error)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI service is temporarily unavailable. Please try again later.",
+        )
 
 
 @router.post("/{document_id}/fairness-check")
 async def check_fairness(document_id: str) -> list[dict[str, str]]:
     """Detect one-sided or unfair clauses."""
     with SessionLocal() as database:
-        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
-        if document is None:
-            raise HTTPException(status_code=404, detail="Document not found.")
+        document = _get_document_or_404(database, document_id)
         clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
 
     clauses_text = "\n\n".join(f"[{c.clause_type}]: {c.text}" for c in clauses)
@@ -405,8 +456,12 @@ async def check_fairness(document_id: str) -> list[dict[str, str]]:
             return []
         except Exception:
             return []
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"AI service error: {e}")
+    except Exception as error:
+        logger.error("Fairness check error: %s", error)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI service is temporarily unavailable. Please try again later.",
+        )
 
 
 @router.get("/compliance/states")
@@ -416,16 +471,17 @@ def list_compliance_states() -> list[dict[str, str]]:
 
 
 @router.post("/{document_id}/compliance")
-def get_document_compliance(document_id: str, body: dict[str, str] = {}) -> dict[str, Any]:
+def get_document_compliance(
+    document_id: str,
+    body: dict[str, str] = Body(default={}),
+) -> dict[str, Any]:
     """Get state-specific compliance info for a document."""
     state_code = body.get("state", "").strip().lower()
     if not state_code:
-        raise HTTPException(status_code=400, detail="state is required.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="state is required.")
 
     with SessionLocal() as database:
-        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
-        if document is None:
-            raise HTTPException(status_code=404, detail="Document not found.")
+        document = _get_document_or_404(database, document_id)
         clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
 
     full_text = " ".join(c.text for c in clauses)
@@ -434,7 +490,10 @@ def get_document_compliance(document_id: str, body: dict[str, str] = {}) -> dict
 
     compliance = get_state_compliance(state_code, doc_type)
     if compliance is None:
-        raise HTTPException(status_code=404, detail=f"State '{state_code}' is not supported yet.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"State '{state_code}' is not supported yet.",
+        )
 
     return compliance
 
@@ -444,6 +503,8 @@ async def compare_documents(file1: UploadFile = File(...), file2: UploadFile = F
     """Compare two legal documents side by side."""
     content1 = await file1.read()
     content2 = await file2.read()
+    _validate_pdf_upload(file1, content1)
+    _validate_pdf_upload(file2, content2)
 
     try:
         doc1 = extract_digital_pdf(content1, file1.filename or "document1.pdf")
@@ -463,26 +524,40 @@ async def compare_documents(file1: UploadFile = File(...), file2: UploadFile = F
 
     types1 = {c.clause_type for c in clauses1}
     types2 = {c.clause_type for c in clauses2}
-    # Also apply fallback
     for ct, pat in _FALLBACK.items():
         if ct not in types1 and re.search(pat, text1, re.IGNORECASE):
             types1.add(ct)
         if ct not in types2 and re.search(pat, text2, re.IGNORECASE):
             types2.add(ct)
 
-    clause_comparison = []
     all_types = sorted(types1 | types2 | REQUIRED_CLAUSES)
-    for ct in all_types:
-        clause_comparison.append({
+    clause_comparison = [
+        {
             "clause": ct,
             "label": ct.replace("_", " ").title(),
             "in_doc1": ct in types1,
             "in_doc2": ct in types2,
-        })
+        }
+        for ct in all_types
+    ]
 
     return {
-        "doc1": {"filename": doc1.filename, "pages": doc1.page_count, "doc_type": type1, "risk_score": risk1, "risk_level": level1, "findings_count": len(findings1)},
-        "doc2": {"filename": doc2.filename, "pages": doc2.page_count, "doc_type": type2, "risk_score": risk2, "risk_level": level2, "findings_count": len(findings2)},
+        "doc1": {
+            "filename": doc1.filename,
+            "pages": doc1.page_count,
+            "doc_type": type1,
+            "risk_score": risk1,
+            "risk_level": level1,
+            "findings_count": len(findings1),
+        },
+        "doc2": {
+            "filename": doc2.filename,
+            "pages": doc2.page_count,
+            "doc_type": type2,
+            "risk_score": risk2,
+            "risk_level": level2,
+            "findings_count": len(findings2),
+        },
         "clause_comparison": clause_comparison,
     }
 
@@ -510,7 +585,7 @@ def get_document_history() -> list[dict[str, Any]]:
 
 @router.get("/sources", response_model=list[LlmEvidenceSource])
 def list_legal_sources() -> list[LlmEvidenceSource]:
-    """Diagnostic endpoint: list indexed legal sources (citation, text, url)."""
+    """List indexed legal sources (citation, text, url)."""
     with SessionLocal() as database:
         sources = database.scalars(select(LegalSource)).all()
 
@@ -523,9 +598,7 @@ def list_legal_sources() -> list[LlmEvidenceSource]:
 @router.get("/{document_id}", response_model=PersistedDocument)
 def get_document(document_id: str) -> PersistedDocument:
     with SessionLocal() as database:
-        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
-        if document is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        document = _get_document_or_404(database, document_id)
         return _persisted_response(document)
 
 
@@ -536,40 +609,3 @@ def delete_document(document_id: str) -> None:
         if document is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
         database.delete(document)
-
-
-@router.get("/{document_id}/debug_retrieval")
-def debug_retrieval(document_id: str) -> Any:
-    """Developer diagnostic: for each finding, return the retriever matches and scores."""
-    with SessionLocal() as database:
-        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
-        if document is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
-        findings = [Finding.model_validate(finding.__dict__) for finding in document.findings]
-        sources = database.scalars(select(LegalSource)).all()
-
-    source_records = [
-        SourceRecord(source.id, source.title, source.citation, source.text, source.source_url, source.authority_level)
-        for source in sources
-    ]
-    retriever = HybridRetriever(source_records) if source_records else None
-
-    results: list[dict[str, Any]] = []
-    for finding in findings:
-        query = f"{finding.finding_type} {finding.document_fact}"
-        if not retriever:
-            results.append({"finding": finding.document_fact, "query": query, "matches": []})
-            continue
-        scored = retriever.search_with_scores(query, limit=10)
-        matches = [
-            {
-                "score": score,
-                "citation": source.citation,
-                "title": source.title,
-                "authority_level": source.authority_level,
-            }
-            for score, source in scored
-        ]
-        results.append({"finding": finding.document_fact, "query": query, "matches": matches})
-
-    return results
