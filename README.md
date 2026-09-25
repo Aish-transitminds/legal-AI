@@ -1,103 +1,127 @@
-# Legal Document Intelligence
+# ⚖️ Legal Document Intelligence (LDI)
 
-India-first, local-first legal document analysis for a deliberately narrow MVP.
+An India-first, AI-powered legal document analysis tool designed to help individuals and professionals understand contracts, spot missing clauses, and negotiate fairer terms.
 
-This is an AI-assisted document analysis and legal-information tool. It is not an AI lawyer,
-does not provide legal advice, and does not replace review by a qualified legal professional.
-Potential findings require human review.
+*Note: This is an AI-assisted document analysis tool, not an AI lawyer. It does not provide legal advice and does not replace review by a qualified legal professional.*
 
-## MVP v1 scope
+---
 
-- Document type: NDA
-- Input: digital PDF only
-- Clause segmentation: reduced, rule-based taxonomy
-- Legal retrieval: verified Indian Contract Act material from India Code only
-- Findings: deterministic checks for missing clauses, dates, and jurisdiction
-- LLM: local Ollama, used only to explain findings with validated evidence
-- User model: single-user local tool; no authentication yet
+## ✨ Features
 
-OCR, DOCX, chat, additional document types, judgments, research-based classifiers,
-authentication, and production hardening are later phases and are intentionally excluded.
+- **📄 Document Analysis**: Upload Lease Deeds, NDAs, Employment Contracts, and Sale Deeds. Automatically extracts clauses and detects the document type.
+- **🚨 Risk Assessment**: Deterministic rule-based engine spots missing essential clauses (Governing Law, Dispute Resolution, Termination, etc.) and generates a weighted 0-100 Risk Score.
+- **💬 Ask-the-Document Chat**: Ask specific questions (e.g., *"What happens if I pay rent late?"*) and get answers grounded **strictly** in the extracted clauses, with citations.
+- **✨ AI Clause Drafting**: One-click generation of suggested legal clauses for any missing terms, tailored to Indian commercial law.
+- **💡 Plain-Language Explainer**: Toggle dense legalese into plain, simple English that non-lawyers can easily understand.
+- **⚖️ Fairness & Bias Check**: Analyzes the contract for one-sided terms (e.g., only the tenant pays penalties) and suggests how to make it fairer.
+- **🇮🇳 State-wise Compliance**: Select your Indian state to get precise Stamp Duty rates, Registration limits, and Rent Control Acts (covers Maharashtra, Karnataka, Delhi, UP, Tamil Nadu, etc.).
+- **🖨️ Document Comparison**: Upload two PDFs (e.g., an original lease and a revised version) to compare their clause coverage and risk scores side-by-side.
+- **✍️ Incomplete Draft Detection**: Automatically catches unfilled placeholders (e.g., `[NAME]`, `......`) in template documents.
 
-## Free/local cost policy
+---
 
-The default design requires no paid API:
+## 🛠️ Tech Stack
 
-- PDF parsing: local Python libraries
-- Embeddings: local sentence-transformers model
-- LLM explanations: local Ollama model
-- Database: local PostgreSQL for the target architecture
+### Frontend
+- **React 18** (Vite)
+- **CSS3** (Custom responsive styling, no UI libraries)
 
-Groq or another OpenAI-compatible provider may be added as an optional remote provider.
-It is not required, and sending contracts to a remote provider has additional privacy and
-cost implications. API keys must remain server-side and must never be committed.
+### Backend
+- **FastAPI** (Python 3.10+)
+- **SQLAlchemy 2.0** (ORM)
+- **PostgreSQL** (Database)
+- **PyMuPDF & pytesseract** (PDF parsing and OCR fallback for scanned docs)
 
-Render deployment is supported as a deployment target, but Render pricing, sleep behavior,
-storage persistence, and managed PostgreSQL availability depend on the current account plan.
-This project does not claim that hosted deployment is free or DPDP Act compliant.
+### AI & LLM
+- **OpenRouter API** (Routing to `google/gemma-4-31b-it:free` and other LLMs)
+- **TF-IDF & Cosine Similarity** (Lightweight legal source retrieval)
 
-## Render deployment
+---
 
-The repository includes `render.yaml` for a separate API web service and static frontend.
-Create a Blueprint from this repository, then set these secret or deployment-specific values
-in the Render dashboard:
+## 🏗️ Architecture & Flowchart
 
-- API: `DATABASE_URL`, `CORS_ORIGINS`, and `OPENROUTER_API_KEY`.
-- Frontend: `VITE_API_BASE_URL`, set to the deployed API URL such as
-	`https://legal-document-ai-api.onrender.com`.
+```mermaid
+flowchart TD
+    subgraph Frontend [React Frontend]
+        UI[Web UI]
+        Chat[Chat / Draft / Simplify]
+    end
 
-The app remains editable after deployment: push changes to `main`, and Render will rebuild
-the affected services automatically. Keep API keys only in Render environment variables,
-never in GitHub.
+    subgraph Backend [FastAPI Backend]
+        API[API Router]
+        PDF[PDF Ingestion & OCR]
+        Seg[Clause Segmenter]
+        Rules[Rules Engine & Compliance]
+        LLM[Legal LLM Service]
+    end
 
-## Local setup
+    subgraph Storage [Database]
+        PG[(PostgreSQL)]
+    end
 
-The development default is SQLite, so PostgreSQL is not required to run the MVP locally.
+    subgraph External [External APIs]
+        OR[OpenRouter API]
+    end
 
+    UI -- Upload PDF --> API
+    API --> PDF
+    PDF -- Extracted Text --> Seg
+    Seg -- Clauses --> Rules
+    Rules -- Detected Findings --> PG
+    PG -- Analysis Results --> UI
+
+    Chat -- User Query --> LLM
+    LLM -- Prompt --> OR
+    OR -- Generated Text --> LLM
+    LLM -- Response --> UI
+```
+
+---
+
+## 🚀 Getting Started
+
+### 1. Local Setup
+
+Make sure you have Python 3.10+ and Node.js installed.
+
+**Backend Setup:**
 ```powershell
 cd backend
 python -m pip install -r requirements.txt
-python -m pytest -q
+cp .env.example .env
+```
+*Edit your `.env` to include your OpenRouter API key and Database URL (SQLite or PostgreSQL).*
+
+```powershell
+# Run the backend API
 python -m uvicorn app.main:app --reload
 ```
 
-The API runs at `http://127.0.0.1:8000`. The frontend is a Vite app:
-
+**Frontend Setup:**
 ```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-Copy `.env.example` to `.env` to configure the database. Install Ollama separately and
-pull a local model such as `llama3.2:3b` when enabling local LLM explanations.
+### 2. Cloud Deployment (Render)
 
-## Official law ingestion
+This repository includes a `render.yaml` file for instant deployment on [Render](https://render.com/).
 
-The official PDF must be downloaded manually from India Code and placed at
-`data/official/laws/indian_contract_act_1872.pdf`. Register its file checksum, then extract
-and persist the verified text:
+1. Connect your GitHub repository to Render and create a Blueprint.
+2. Render will automatically provision:
+   - A PostgreSQL Database
+   - A Python Web Service (Backend API)
+   - A Static Site (React Frontend)
+3. In the Render Dashboard, set the following environment variables for the API:
+   - `OPENROUTER_API_KEY`: Your OpenRouter API key
+   - `OPENROUTER_MODEL`: `google/gemma-4-31b-it:free` (or your preferred model)
+4. Your frontend will automatically be configured to point to your live API.
 
-```powershell
-python scripts/register_official_law.py data/official/laws/indian_contract_act_1872.pdf `
-	--url "https://indiacode.gov.in/" `
-	--title "The Indian Contract Act, 1872"
+---
 
-python scripts/ingest_official_law_pdf.py data/official/laws/indian_contract_act_1872.pdf `
-	--title "The Indian Contract Act, 1872" `
-	--citation "Act No. 9 of 1872" `
-	--url "https://indiacode.gov.in/"
-```
+## 🛡️ Privacy & Legal Disclaimer
 
-The loader rejects unverified or checksum-mismatched source records and avoids duplicate
-database rows on repeat runs.
+Uploaded contracts may contain sensitive personal and corporate data. While this MVP persists documents to a database for history and comparison features, **it does not constitute DPDP Act compliance**. 
 
-The implementation will be delivered phase by phase. No dataset is considered downloaded
-until its file, provenance, checksum, and verification status are recorded.
-
-## Privacy and legal limitations
-
-Uploaded contracts may contain personal data. The MVP will support deletion and configurable
-retention, but these engineering controls do not constitute DPDP Act compliance. A real
-product requires legal review of privacy, retention, security, and unauthorized-practice
-risks before broad release.
+A production deployment requires strict engineering controls around data retention, encryption at rest, and legal review before broad commercial release. Always keep API keys server-side and never commit them to version control.
