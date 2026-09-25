@@ -21,7 +21,7 @@ from app.segmentation.clause_service import segment_clauses
 from app.services.legal_llm_service import build_legal_llm, _summary_prompt
 from typing import Any
 from app.schemas.llm import EvidenceSource as LlmEvidenceSource
-
+from app.rules.indian_compliance import get_supported_states, get_state_compliance
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 settings = get_settings()
@@ -295,6 +295,148 @@ def get_clause_coverage(document_id: str) -> dict[str, Any]:
         "coverage_percent": round(present_count / len(REQUIRED_CLAUSES) * 100) if REQUIRED_CLAUSES else 0,
         "clauses": coverage,
     }
+
+
+@router.post("/{document_id}/chat")
+async def chat_with_document(document_id: str, body: dict[str, str] = {}) -> dict[str, Any]:
+    """Ask a question about the document, answered from its clauses only."""
+    question = body.get("question", "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is required.")
+
+    with SessionLocal() as database:
+        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
+        if document is None:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
+
+    clauses_text = "\n\n".join(f"[{c.clause_type.upper()}]: {c.text}" for c in clauses)
+
+    try:
+        provider = build_legal_llm(settings)
+        from app.services.legal_llm_service import _chat_prompt, _parse_json
+        prompt = _chat_prompt(question, clauses_text[:8000])
+        raw = await provider.generate_text(prompt)
+        await provider.client.aclose()
+
+        try:
+            parsed = _parse_json(raw)
+            return {"answer": parsed.get("answer", raw), "source_clauses": parsed.get("source_clauses", [])}
+        except Exception:
+            return {"answer": raw.strip(), "source_clauses": []}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service error: {e}")
+
+
+@router.post("/{document_id}/draft-clause")
+async def draft_clause(document_id: str, body: dict[str, str] = {}) -> dict[str, Any]:
+    """AI-generate a suggested clause for a missing clause type."""
+    clause_type = body.get("clause_type", "").strip()
+    if not clause_type:
+        raise HTTPException(status_code=400, detail="clause_type is required.")
+
+    with SessionLocal() as database:
+        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
+        if document is None:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
+
+    existing_text = "\n".join(f"- {c.clause_type}: {c.text[:200]}" for c in clauses) or "No existing clauses."
+    doc_type = body.get("doc_type", "general")
+
+    try:
+        provider = build_legal_llm(settings)
+        from app.services.legal_llm_service import _draft_clause_prompt
+        prompt = _draft_clause_prompt(clause_type, doc_type, existing_text[:4000])
+        drafted = await provider.generate_text(prompt)
+        await provider.client.aclose()
+        return {
+            "clause_type": clause_type,
+            "drafted_text": drafted.strip(),
+            "disclaimer": "AI-generated draft. Must be reviewed and customized by a qualified legal professional before use.",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service error: {e}")
+
+
+@router.post("/{document_id}/simplify-clause")
+async def simplify_clause(document_id: str, body: dict[str, str] = {}) -> dict[str, str]:
+    """Rewrite a legal clause in plain English."""
+    clause_text = body.get("clause_text", "").strip()
+    if not clause_text:
+        raise HTTPException(status_code=400, detail="clause_text is required.")
+
+    try:
+        provider = build_legal_llm(settings)
+        from app.services.legal_llm_service import _simplify_prompt
+        prompt = _simplify_prompt(clause_text[:3000])
+        simplified = await provider.generate_text(prompt)
+        await provider.client.aclose()
+        return {"simple_text": simplified.strip()}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service error: {e}")
+
+
+@router.post("/{document_id}/fairness-check")
+async def check_fairness(document_id: str) -> list[dict[str, str]]:
+    """Detect one-sided or unfair clauses."""
+    with SessionLocal() as database:
+        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
+        if document is None:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
+
+    clauses_text = "\n\n".join(f"[{c.clause_type}]: {c.text}" for c in clauses)
+    full_text = " ".join(c.text for c in clauses)
+    from app.rules.engine import _detect_doc_type
+    doc_type = _detect_doc_type(full_text)
+
+    try:
+        provider = build_legal_llm(settings)
+        from app.services.legal_llm_service import _fairness_prompt, _parse_json
+        prompt = _fairness_prompt(clauses_text[:8000], doc_type)
+        raw = await provider.generate_text(prompt)
+        await provider.client.aclose()
+
+        try:
+            parsed = _parse_json(raw)
+            if isinstance(parsed, list):
+                return parsed
+            return []
+        except Exception:
+            return []
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"AI service error: {e}")
+
+
+@router.get("/compliance/states")
+def list_compliance_states() -> list[dict[str, str]]:
+    """Return list of supported Indian states for compliance checks."""
+    return get_supported_states()
+
+
+@router.post("/{document_id}/compliance")
+def get_document_compliance(document_id: str, body: dict[str, str] = {}) -> dict[str, Any]:
+    """Get state-specific compliance info for a document."""
+    state_code = body.get("state", "").strip().lower()
+    if not state_code:
+        raise HTTPException(status_code=400, detail="state is required.")
+
+    with SessionLocal() as database:
+        document = database.scalar(select(Document).where(Document.id == document_id, Document.deleted_at.is_(None)))
+        if document is None:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        clauses = [ClauseSegment.model_validate(c.__dict__) for c in document.clauses]
+
+    full_text = " ".join(c.text for c in clauses)
+    from app.rules.engine import _detect_doc_type
+    doc_type = _detect_doc_type(full_text)
+
+    compliance = get_state_compliance(state_code, doc_type)
+    if compliance is None:
+        raise HTTPException(status_code=404, detail=f"State '{state_code}' is not supported yet.")
+
+    return compliance
 
 
 @router.post("/compare")

@@ -130,4 +130,17 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
                 )
             )
 
+    # Fill-in-the-blank / incomplete draft detection
+    blanks = re.findall(r'(?:\.{3,}|_{3,}|\[\s*INSERT\s*\]|\[\s*NAME\s*\]|\[\s*DATE\s*\]|\[\s*ADDRESS\s*\]|\[\s*AMOUNT\s*\]|\[\s*\]|\*{3,})', text, re.IGNORECASE)
+    if blanks:
+        unique_blanks = list(set(b.strip() for b in blanks))
+        findings.append(
+            Finding(
+                finding_type="incomplete_draft",
+                severity="high",
+                document_fact=f"Found {len(blanks)} unfilled placeholder(s) in the document: {', '.join(unique_blanks[:5])}{'...' if len(unique_blanks) > 5 else ''}",
+                ai_interpretation="This document appears to be an incomplete template with unfilled blanks. All placeholders must be filled before execution.",
+            )
+        )
+
     return findings, doc_type

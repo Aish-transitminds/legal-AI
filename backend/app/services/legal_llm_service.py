@@ -115,6 +115,66 @@ def _summary_prompt(text: str, clauses_info: str, findings_info: str) -> str:
     )
 
 
+def _chat_prompt(question: str, clauses_text: str) -> str:
+    return (
+        "You are a legal document assistant. Answer the user's question using ONLY the document clauses below. "
+        "If the answer is not in the document, say 'This is not addressed in the document.' "
+        "Always cite which clause your answer comes from. Use cautious language. "
+        "This is document analysis, not legal advice.\n\n"
+        f"DOCUMENT CLAUSES:\n{clauses_text}\n\n"
+        f"USER QUESTION: {question}\n\n"
+        "Return a JSON object with exactly these fields:\n"
+        '{"answer": "your answer citing specific clauses", '
+        '"source_clauses": ["clause_type1", "clause_type2"]}'
+    )
+
+
+def _draft_clause_prompt(clause_type: str, doc_type: str, existing_clauses_text: str) -> str:
+    return (
+        f"You are a legal drafting assistant specializing in Indian commercial law. "
+        f"Draft a {clause_type.replace('_', ' ')} clause for a {doc_type.replace('_', ' ')} agreement.\n\n"
+        "Requirements:\n"
+        "- Use formal legal language appropriate for Indian law\n"
+        "- Be specific and actionable\n"
+        "- Reference relevant Indian statutes where appropriate\n"
+        "- Keep it concise (3-6 sentences)\n"
+        "- Use placeholders like [PARTY A], [PARTY B], [STATE], [CITY] where needed\n\n"
+        f"Existing clauses in the document for context:\n{existing_clauses_text}\n\n"
+        "Return ONLY the clause text, no preamble or explanation."
+    )
+
+
+def _simplify_prompt(clause_text: str) -> str:
+    return (
+        "Rewrite the following legal clause in plain, simple English that a non-lawyer can understand. "
+        "Keep the meaning accurate but use everyday language. "
+        "Use short sentences. Explain any legal terms in parentheses.\n\n"
+        f"LEGAL CLAUSE:\n{clause_text}\n\n"
+        "PLAIN ENGLISH VERSION:"
+    )
+
+
+def _fairness_prompt(clauses_text: str, doc_type: str) -> str:
+    return (
+        "You are a legal fairness analyst. Review the following clauses and identify any that are "
+        "unusually one-sided, unfair, or biased toward one party.\n\n"
+        "Look for:\n"
+        "- Penalties that only apply to one party\n"
+        "- Obligations without corresponding rights\n"
+        "- Unreasonable forfeiture or termination terms\n"
+        "- Missing protections for one party\n"
+        "- One-sided indemnification\n\n"
+        f"Document type: {doc_type.replace('_', ' ')}\n\n"
+        f"CLAUSES:\n{clauses_text}\n\n"
+        "Return a JSON array. Each item must have:\n"
+        '{"clause_excerpt": "short quote from the clause", '
+        '"issue": "what makes it one-sided", '
+        '"favors": "which party benefits (e.g. landlord, employer, seller)", '
+        '"suggestion": "how to make it fairer"}\n\n'
+        "If no fairness issues found, return an empty array []"
+    )
+
+
 def _parse_json(content: str) -> dict[str, Any]:
     cleaned = content.strip()
     if cleaned.startswith("```"):
