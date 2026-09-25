@@ -168,15 +168,16 @@ export function TourOverlay({ isActive, stepIndex, onNext, onBack, onSkip }) {
     return () => window.removeEventListener("resize", onResize);
   }, [isActive, step]);
 
-  if (!isActive || !step) return null;
-
   // Scroll target into view
   useEffect(() => {
+    if (!isActive || !step) return;
     if (step?.targetId) {
       const el = document.getElementById(step.targetId);
       if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
-  }, [step]);
+  }, [isActive, step]);
+
+  if (!isActive || !step) return null;
 
   const bubbleStyle = getBubblePosition(spotlight, windowSize.w, windowSize.h);
 
