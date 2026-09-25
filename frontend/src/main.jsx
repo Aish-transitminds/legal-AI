@@ -12,19 +12,29 @@ function getRiskColor(level) {
 }
 
 // ── Utility: Export HTML report ──────────────────────────────
+function escapeHtml(unsafe) {
+  if (!unsafe) return "";
+  return String(unsafe)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 function buildReportHtml({ documentData, docType, riskScore, riskLevel, findings, clauseCoverage, summary }) {
-  const rc = getRiskColor(riskLevel);
+  const rc = escapeHtml(getRiskColor(riskLevel));
   const fh = findings
     .map(
       (f) =>
-        `<tr><td style="padding:8px;border:1px solid #ddd;text-transform:capitalize">${f.finding_type.replaceAll("_", " ")}</td><td style="padding:8px;border:1px solid #ddd">${f.document_fact}</td><td style="padding:8px;border:1px solid #ddd">${f.severity}</td></tr>`
+        `<tr><td style="padding:8px;border:1px solid #ddd;text-transform:capitalize">${escapeHtml(f.finding_type).replaceAll("_", " ")}</td><td style="padding:8px;border:1px solid #ddd">${escapeHtml(f.document_fact)}</td><td style="padding:8px;border:1px solid #ddd">${escapeHtml(f.severity)}</td></tr>`
     )
     .join("");
   const ch = clauseCoverage
     ? clauseCoverage.clauses
         .map(
           (c) =>
-            `<tr><td style="padding:6px;border:1px solid #ddd">${c.label}</td><td style="padding:6px;border:1px solid #ddd;color:${c.present ? "#2e7d32" : "#a33e2e"}">${c.present ? "✓ Present" : "✗ Missing"}</td></tr>`
+            `<tr><td style="padding:6px;border:1px solid #ddd">${escapeHtml(c.label)}</td><td style="padding:6px;border:1px solid #ddd;color:${c.present ? "#2e7d32" : "#a33e2e"}">${c.present ? "✓ Present" : "✗ Missing"}</td></tr>`
         )
         .join("")
     : "";
@@ -36,14 +46,14 @@ table{width:100%;border-collapse:collapse;margin:16px 0}
 .badge{display:inline-block;padding:4px 12px;color:#fff;font-weight:bold;font-size:12px}
 @media print{body{margin:0}}</style></head><body>
 <h1>Legal Document Analysis Report</h1>
-<p><strong>File:</strong> ${documentData?.filename || "N/A"}</p>
-<p><strong>Type:</strong> ${(docType || "General").replace("_", " ").toUpperCase()}</p>
-<p><strong>Risk:</strong> <span class="badge" style="background:${rc}">${riskScore}/100 ${riskLevel.toUpperCase()}</span></p>
-${clauseCoverage ? `<h2>Coverage (${clauseCoverage.coverage_percent}%)</h2><table><tr><th style="padding:6px;border:1px solid #ddd;text-align:left">Clause</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Status</th></tr>${ch}</table>` : ""}
+<p><strong>File:</strong> ${escapeHtml(documentData?.filename) || "N/A"}</p>
+<p><strong>Type:</strong> ${escapeHtml(docType || "General").replace("_", " ").toUpperCase()}</p>
+<p><strong>Risk:</strong> <span class="badge" style="background:${rc}">${escapeHtml(riskScore)}/100 ${escapeHtml(riskLevel).toUpperCase()}</span></p>
+${clauseCoverage ? `<h2>Coverage (${escapeHtml(clauseCoverage.coverage_percent)}%)</h2><table><tr><th style="padding:6px;border:1px solid #ddd;text-align:left">Clause</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Status</th></tr>${ch}</table>` : ""}
 <h2>Findings (${findings.length})</h2>
 ${findings.length ? `<table><tr><th style="padding:8px;border:1px solid #ddd;text-align:left">Type</th><th style="padding:8px;border:1px solid #ddd;text-align:left">Detail</th><th style="padding:8px;border:1px solid #ddd;text-align:left">Severity</th></tr>${fh}</table>` : "<p>No findings.</p>"}
-${summary ? `<h2>AI Summary</h2><p>${summary.replace(/\n/g, "</p><p>")}</p>` : ""}
-<hr><p style="color:#718087;font-size:11px">AI-assisted analysis. Not legal advice. ${new Date().toLocaleString()}</p>
+${summary ? `<h2>AI Summary</h2><p>${escapeHtml(summary).replace(/\n/g, "</p><p>")}</p>` : ""}
+<hr><p style="color:#718087;font-size:11px">AI-assisted analysis. Not legal advice. ${escapeHtml(new Date().toLocaleString())}</p>
 </body></html>`;
 }
 

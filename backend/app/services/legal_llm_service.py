@@ -286,6 +286,7 @@ class OpenAICompatibleProvider(LegalLLM):
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
+                "max_tokens": 1500,
             },
         )
         return response.json()["choices"][0]["message"]["content"]
