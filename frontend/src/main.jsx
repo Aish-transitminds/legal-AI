@@ -189,14 +189,14 @@ function App() {
           <h1>Legal Document Intelligence</h1>
         </div>
         <div className="header-actions">
-          <button className="header-btn" type="button" onClick={() => { setCompareMode(false); setShowHistory(!showHistory); if (!showHistory) loadHistory(); }}>{showHistory ? "\u2190 Back" : "\ud83d\udcc1 History"}</button>
-          <button className="header-btn" type="button" onClick={() => { setShowHistory(false); setCompareMode(!compareMode); setCompareResult(null); }}>{compareMode ? "\u2190 Back" : "\u2696 Compare"}</button>
+          <button className="header-btn" type="button" onClick={() => { setCompareMode(false); setShowHistory(!showHistory); if (!showHistory) loadHistory(); }}>{showHistory ? "← Back" : "📁 History"}</button>
+          <button className="header-btn" type="button" onClick={() => { setShowHistory(false); setCompareMode(!compareMode); setCompareResult(null); }}>{compareMode ? "← Back" : "⚖ Compare"}</button>
         </div>
       </header>
 
       {showHistory && (
         <section className="history-panel">
-          <div className="section-label"><span>\ud83d\udcc1</span> Analysis History</div>
+          <div className="section-label"><span>📁</span> Analysis History</div>
           {loadingHistory && <div className="empty-state pulse">Loading...</div>}
           {!loadingHistory && history.length === 0 && <div className="empty-state">No documents yet.</div>}
           {!loadingHistory && history.map(doc => (
@@ -210,7 +210,7 @@ function App() {
 
       {compareMode && !showHistory && (
         <section className="compare-panel">
-          <div className="section-label"><span>\u2696</span> Compare Two Documents</div>
+          <div className="section-label"><span>⚖</span> Compare Two Documents</div>
           <form className="compare-form" onSubmit={compareDocuments}>
             <div className="compare-inputs">
               <label className="drop-zone compare-drop"><input type="file" accept=".pdf" onChange={e => setCompareFile1(e.target.files?.[0]||null)} /><strong>{compareFile1 ? compareFile1.name : "Document 1"}</strong></label>
@@ -321,8 +321,8 @@ function App() {
                   <button className={`tab-btn ${activeTab==="findings"?"active":""}`} onClick={()=>setActiveTab("findings")} type="button">Findings</button>
                   <button className={`tab-btn ${activeTab==="ai"?"active":""}`} onClick={()=>setActiveTab("ai")} type="button">AI Analysis</button>
                   <button className={`tab-btn ${activeTab==="summary"?"active":""}`} onClick={()=>setActiveTab("summary")} type="button">Summary</button>
-                  <button className={`tab-btn ${activeTab==="chat"?"active":""}`} onClick={()=>setActiveTab("chat")} type="button">\ud83d\udcac Chat</button>
-                  <button className={`tab-btn ${activeTab==="fairness"?"active":""}`} onClick={()=>setActiveTab("fairness")} type="button">\u2696 Fairness</button>
+                  <button className={`tab-btn ${activeTab==="chat"?"active":""}`} onClick={()=>setActiveTab("chat")} type="button">💬 Chat</button>
+                  <button className={`tab-btn ${activeTab==="fairness"?"active":""}`} onClick={()=>setActiveTab("fairness")} type="button">⚖ Fairness</button>
                 </div>
               )}
 
