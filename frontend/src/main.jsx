@@ -382,12 +382,12 @@ function App() {
           <form className="compare-form" onSubmit={compareDocuments}>
             <div className="compare-inputs">
               <label className="drop-zone compare-drop">
-                <input type="file" accept=".pdf,application/pdf" onChange={(e) => setCompareFile1(e.target.files?.[0] || null)} />
+                <input type="file" aria-label="First document for comparison" accept=".pdf,application/pdf" onChange={(e) => setCompareFile1(e.target.files?.[0] || null)} />
                 <strong>{compareFile1 ? compareFile1.name : "Document 1"}</strong>
               </label>
               <span className="compare-vs" aria-hidden="true">VS</span>
               <label className="drop-zone compare-drop">
-                <input type="file" accept=".pdf,application/pdf" onChange={(e) => setCompareFile2(e.target.files?.[0] || null)} />
+                <input type="file" aria-label="Second document for comparison" accept=".pdf,application/pdf" onChange={(e) => setCompareFile2(e.target.files?.[0] || null)} />
                 <strong>{compareFile2 ? compareFile2.name : "Document 2"}</strong>
               </label>
             </div>

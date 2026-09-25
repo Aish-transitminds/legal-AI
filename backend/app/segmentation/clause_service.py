@@ -95,7 +95,7 @@ def segment_clauses(document: ExtractedDocument) -> list[dict[str, object]]:
         current_lines: list[str] = []
 
         def flush() -> None:
-            nonlocal current_type, current_lines
+            nonlocal current_lines
             text = "\n".join(current_lines).strip()
             if text:
                 segments.append(
