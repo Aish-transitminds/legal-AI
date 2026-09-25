@@ -1,127 +1,99 @@
-# ⚖️ Legal Document Intelligence (LDI)
+# Legal Document Intelligence
 
-An India-first, AI-powered legal document analysis tool designed to help individuals and professionals understand contracts, spot missing clauses, and negotiate fairer terms.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![React 18](https://img.shields.io/badge/react-18-blue.svg)](https://reactjs.org/)
 
-*Note: This is an AI-assisted document analysis tool, not an AI lawyer. It does not provide legal advice and does not replace review by a qualified legal professional.*
+A specialized document analysis engine built to parse, evaluate, and extract insights from Indian legal contracts (Leases, NDAs, Employment Agreements, and Sale Deeds). 
 
----
-
-## ✨ Features
-
-- **📄 Document Analysis**: Upload Lease Deeds, NDAs, Employment Contracts, and Sale Deeds. Automatically extracts clauses and detects the document type.
-- **🚨 Risk Assessment**: Deterministic rule-based engine spots missing essential clauses (Governing Law, Dispute Resolution, Termination, etc.) and generates a weighted 0-100 Risk Score.
-- **💬 Ask-the-Document Chat**: Ask specific questions (e.g., *"What happens if I pay rent late?"*) and get answers grounded **strictly** in the extracted clauses, with citations.
-- **✨ AI Clause Drafting**: One-click generation of suggested legal clauses for any missing terms, tailored to Indian commercial law.
-- **💡 Plain-Language Explainer**: Toggle dense legalese into plain, simple English that non-lawyers can easily understand.
-- **⚖️ Fairness & Bias Check**: Analyzes the contract for one-sided terms (e.g., only the tenant pays penalties) and suggests how to make it fairer.
-- **🇮🇳 State-wise Compliance**: Select your Indian state to get precise Stamp Duty rates, Registration limits, and Rent Control Acts (covers Maharashtra, Karnataka, Delhi, UP, Tamil Nadu, etc.).
-- **🖨️ Document Comparison**: Upload two PDFs (e.g., an original lease and a revised version) to compare their clause coverage and risk scores side-by-side.
-- **✍️ Incomplete Draft Detection**: Automatically catches unfilled placeholders (e.g., `[NAME]`, `......`) in template documents.
+> **Disclaimer:** This software provides technical document analysis, not legal advice. Output must be reviewed by a qualified legal professional before use in any legal capacity.
 
 ---
 
-## 🛠️ Tech Stack
+## Core Capabilities
 
-### Frontend
-- **React 18** (Vite)
-- **CSS3** (Custom responsive styling, no UI libraries)
+The application processes PDF contracts through a deterministic rules engine combined with an LLM layer for contextual understanding.
 
-### Backend
-- **FastAPI** (Python 3.10+)
-- **SQLAlchemy 2.0** (ORM)
-- **PostgreSQL** (Database)
-- **PyMuPDF & pytesseract** (PDF parsing and OCR fallback for scanned docs)
-
-### AI & LLM
-- **OpenRouter API** (Routing to `google/gemma-4-31b-it:free` and other LLMs)
-- **TF-IDF & Cosine Similarity** (Lightweight legal source retrieval)
+| Feature | Description |
+| :--- | :--- |
+| **Automated Review** | Extracts clauses, detects document types, and flags missing essential terms based on contract type. |
+| **Risk Scoring** | Generates a 0-100 risk score based on the severity of missing clauses and unbalanced terms. |
+| **Contextual Q&A** | Chat interface that answers user questions using *only* the extracted clauses, providing direct citations. |
+| **Clause Drafting** | Generates tailored replacement clauses for missing terms based on Indian commercial law standards. |
+| **Fairness Analysis** | Identifies one-sided obligations and unbalanced penalty structures within the contract. |
+| **Compliance Checks** | Verifies state-specific Stamp Duty rates, Registration limits, and Rent Control applicability. |
+| **Template Validation** | Catches unfilled placeholders (e.g., `[NAME]`, `......`) to prevent execution of incomplete drafts. |
+| **Document Diffing** | Side-by-side comparison of clause coverage and risk scores across two document versions. |
 
 ---
 
-## 🏗️ Architecture & Flowchart
+## System Architecture
+
+The system uses a decoupled architecture. The React frontend communicates with a FastAPI backend that handles ingestion, rule evaluation, and external LLM routing.
 
 ```mermaid
-flowchart TD
-    subgraph Frontend [React Frontend]
-        UI[Web UI]
-        Chat[Chat / Draft / Simplify]
+flowchart LR
+    Client[React Client] <--> API[FastAPI Gateway]
+    
+    subgraph Backend Services
+        API <--> Ingestion[PDF/OCR Parser]
+        Ingestion --> Rules[Rules Engine]
+        Rules --> DB[(PostgreSQL)]
+        API <--> LLM[LLM Context Manager]
     end
-
-    subgraph Backend [FastAPI Backend]
-        API[API Router]
-        PDF[PDF Ingestion & OCR]
-        Seg[Clause Segmenter]
-        Rules[Rules Engine & Compliance]
-        LLM[Legal LLM Service]
-    end
-
-    subgraph Storage [Database]
-        PG[(PostgreSQL)]
-    end
-
-    subgraph External [External APIs]
-        OR[OpenRouter API]
-    end
-
-    UI -- Upload PDF --> API
-    API --> PDF
-    PDF -- Extracted Text --> Seg
-    Seg -- Clauses --> Rules
-    Rules -- Detected Findings --> PG
-    PG -- Analysis Results --> UI
-
-    Chat -- User Query --> LLM
-    LLM -- Prompt --> OR
-    OR -- Generated Text --> LLM
-    LLM -- Response --> UI
+    
+    LLM <--> OpenRouter((OpenRouter API))
 ```
+
+### Technology Stack
+
+* **Client:** React 18 (Vite), Custom CSS
+* **Server:** FastAPI (Python 3.10+), SQLAlchemy 2.0
+* **Storage:** PostgreSQL (production), SQLite (local dev)
+* **Processing:** PyMuPDF, pytesseract (OCR fallback)
+* **AI Routing:** OpenRouter API (Default: `google/gemma-4-31b-it:free`)
 
 ---
 
-## 🚀 Getting Started
+## Deployment & Setup
 
-### 1. Local Setup
+### Local Development Environment
 
-Make sure you have Python 3.10+ and Node.js installed.
+Prerequisites: Python 3.10+ and Node.js.
 
-**Backend Setup:**
-```powershell
-cd backend
-python -m pip install -r requirements.txt
-cp .env.example .env
-```
-*Edit your `.env` to include your OpenRouter API key and Database URL (SQLite or PostgreSQL).*
+1. **Backend Configuration**
+   ```bash
+   cd backend
+   pip install -r requirements.txt
+   cp .env.example .env
+   ```
+   *Note: Add your `OPENROUTER_API_KEY` to the `.env` file.*
 
-```powershell
-# Run the backend API
-python -m uvicorn app.main:app --reload
-```
+2. **Start the API Server**
+   ```bash
+   python -m uvicorn app.main:app --reload
+   ```
 
-**Frontend Setup:**
-```powershell
-cd frontend
-npm install
-npm run dev
-```
+3. **Start the Frontend Client**
+   ```bash
+   cd ../frontend
+   npm install
+   npm run dev
+   ```
 
-### 2. Cloud Deployment (Render)
+### Cloud Deployment (Render)
 
-This repository includes a `render.yaml` file for instant deployment on [Render](https://render.com/).
+This repository includes a `render.yaml` configuration for zero-downtime deployment on Render.
 
-1. Connect your GitHub repository to Render and create a Blueprint.
-2. Render will automatically provision:
-   - A PostgreSQL Database
-   - A Python Web Service (Backend API)
-   - A Static Site (React Frontend)
-3. In the Render Dashboard, set the following environment variables for the API:
-   - `OPENROUTER_API_KEY`: Your OpenRouter API key
-   - `OPENROUTER_MODEL`: `google/gemma-4-31b-it:free` (or your preferred model)
-4. Your frontend will automatically be configured to point to your live API.
+1. Create a New Blueprint instance on Render and connect this repository.
+2. The blueprint will automatically provision the PostgreSQL database, FastAPI service, and React static site.
+3. In the Render Dashboard, configure the environment variables for the API service:
+   * `OPENROUTER_API_KEY`: Your provider key
+   * `OPENROUTER_MODEL`: `google/gemma-4-31b-it:free` (or target model)
+4. Re-deploy the API service to apply the environment variables.
 
 ---
 
-## 🛡️ Privacy & Legal Disclaimer
+## Data Privacy Note
 
-Uploaded contracts may contain sensitive personal and corporate data. While this MVP persists documents to a database for history and comparison features, **it does not constitute DPDP Act compliance**. 
-
-A production deployment requires strict engineering controls around data retention, encryption at rest, and legal review before broad commercial release. Always keep API keys server-side and never commit them to version control.
+Contracts uploaded to this system are processed in memory and persisted to the configured database to enable history and comparison features. This implementation is designed as a technical MVP and does not include the engineering controls required for DPDP Act compliance. Production deployments should implement data retention policies and encryption at rest.
