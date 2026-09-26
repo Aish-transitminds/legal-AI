@@ -1,16 +1,17 @@
 from datetime import datetime
 from uuid import uuid4
 
+from app.db import Base
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from app.db import Base
 
 
 class Document(Base):
     __tablename__ = "documents"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     filename: Mapped[str] = mapped_column(String(255))
     content_sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="uploaded")
@@ -24,8 +25,12 @@ class Document(Base):
 class Clause(Base):
     __tablename__ = "clauses"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE")
+    )
     clause_type: Mapped[str] = mapped_column(String(64))
     text: Mapped[str] = mapped_column(Text)
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -34,20 +39,28 @@ class Clause(Base):
 class LegalSource(Base):
     __tablename__ = "legal_sources"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
     title: Mapped[str] = mapped_column(String(255))
     citation: Mapped[str] = mapped_column(String(255))
     text: Mapped[str] = mapped_column(Text)
     source_url: Mapped[str] = mapped_column(String(500))
-    authority_level: Mapped[str] = mapped_column(String(32), default="official_legislation")
+    authority_level: Mapped[str] = mapped_column(
+        String(32), default="official_legislation"
+    )
     content_sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
 
 
 class LegalFinding(Base):
     __tablename__ = "legal_findings"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE")
+    )
     finding_type: Mapped[str] = mapped_column(String(64))
     severity: Mapped[str] = mapped_column(String(32), default="review_recommended")
     document_fact: Mapped[str] = mapped_column(Text)

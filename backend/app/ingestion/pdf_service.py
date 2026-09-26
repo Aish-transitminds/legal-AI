@@ -1,7 +1,6 @@
 from io import BytesIO
 
 import fitz
-
 from app.schemas.ingestion import ExtractedDocument, ExtractedPage, TextBlock
 
 

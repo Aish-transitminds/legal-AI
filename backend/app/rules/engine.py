@@ -32,13 +32,25 @@ def _detect_doc_type(text: str) -> str:
     lower = text.lower()
     if re.search(r"\b(?:lease|rent|lessor|lessee|tenant|demise|premises)\b", lower):
         return "lease"
-    if re.search(r"\b(?:non-disclosure|nda|confidential information|disclosing party|receiving party)\b", lower):
+    if re.search(
+        r"\b(?:non-disclosure|nda|confidential information|disclosing party|receiving party)\b",
+        lower,
+    ):
         return "nda"
-    if re.search(r"\b(?:employ|salary|compensation|probation|designation|human resource)\b", lower):
+    if re.search(
+        r"\b(?:employ|salary|compensation|probation|designation|human resource)\b",
+        lower,
+    ):
         return "employment"
-    if re.search(r"\b(?:sale deed|conveyance|absolute sale|purchase price|immovable property)\b", lower):
+    if re.search(
+        r"\b(?:sale deed|conveyance|absolute sale|purchase price|immovable property)\b",
+        lower,
+    ):
         return "sale_deed"
-    if re.search(r"\b(?:service agreement|scope of work|deliverables|service provider|client)\b", lower):
+    if re.search(
+        r"\b(?:service agreement|scope of work|deliverables|service provider|client)\b",
+        lower,
+    ):
         return "service_agreement"
     return "general"
 
@@ -74,14 +86,23 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
         findings.append(
             Finding(
                 finding_type="missing_clause",
-                severity="high" if clause_type in {"governing_law", "jurisdiction", "dispute_resolution"} else "medium",
+                severity=(
+                    "high"
+                    if clause_type
+                    in {"governing_law", "jurisdiction", "dispute_resolution"}
+                    else "medium"
+                ),
                 document_fact=f"No {clause_type.replace('_', ' ')} clause was detected in this {doc_type.replace('_', ' ')}.",
                 ai_interpretation=f"Review Recommended: a {clause_type.replace('_', ' ')} clause is typically expected in a {doc_type.replace('_', ' ')} agreement.",
             )
         )
 
     # Date check
-    if not re.search(r"\b(?:effective|execution|executed on|dated|day of|date of)\b", text, re.IGNORECASE):
+    if not re.search(
+        r"\b(?:effective|execution|executed on|dated|day of|date of)\b",
+        text,
+        re.IGNORECASE,
+    ):
         findings.append(
             Finding(
                 finding_type="missing_date",
@@ -93,7 +114,11 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
 
     # Indian Lease-specific checks
     if doc_type == "lease":
-        if not re.search(r"\b(?:register|registration|registered|sub-registrar)\b", text, re.IGNORECASE):
+        if not re.search(
+            r"\b(?:register|registration|registered|sub-registrar)\b",
+            text,
+            re.IGNORECASE,
+        ):
             findings.append(
                 Finding(
                     finding_type="missing_registration",
@@ -102,7 +127,11 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
                     ai_interpretation="Review Recommended: under the Indian Registration Act 1908, leases exceeding 11 months must be registered.",
                 )
             )
-        if not re.search(r"\b(?:stamp duty|stamp paper|stamped|non-judicial stamp)\b", text, re.IGNORECASE):
+        if not re.search(
+            r"\b(?:stamp duty|stamp paper|stamped|non-judicial stamp)\b",
+            text,
+            re.IGNORECASE,
+        ):
             findings.append(
                 Finding(
                     finding_type="missing_stamp_duty",
@@ -111,7 +140,9 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
                     ai_interpretation="Review Recommended: ensure adequate stamp duty is paid per state laws for the deed's admissibility.",
                 )
             )
-        if not re.search(r"\b(?:security deposit|earnest|caution deposit)\b", text, re.IGNORECASE):
+        if not re.search(
+            r"\b(?:security deposit|earnest|caution deposit)\b", text, re.IGNORECASE
+        ):
             findings.append(
                 Finding(
                     finding_type="missing_security_deposit",
@@ -120,7 +151,11 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
                     ai_interpretation="Review Recommended: lease agreements typically include security deposit, lock-in period and rent escalation clauses.",
                 )
             )
-        if not re.search(r"\b(?:escalat|increase|revision|hike|increment).*\b(?:rent|lease)\b|\b(?:rent|lease).*\b(?:escalat|increase|revision|hike)\b", text, re.IGNORECASE):
+        if not re.search(
+            r"\b(?:escalat|increase|revision|hike|increment).*\b(?:rent|lease)\b|\b(?:rent|lease).*\b(?:escalat|increase|revision|hike)\b",
+            text,
+            re.IGNORECASE,
+        ):
             findings.append(
                 Finding(
                     finding_type="missing_rent_escalation",
@@ -131,7 +166,11 @@ def run_document_rules(text: str, clauses: list[ClauseSegment]) -> list[Finding]
             )
 
     # Fill-in-the-blank / incomplete draft detection
-    blanks = re.findall(r'(?:\.{3,}|_{3,}|\[\s*INSERT\s*\]|\[\s*NAME\s*\]|\[\s*DATE\s*\]|\[\s*ADDRESS\s*\]|\[\s*AMOUNT\s*\]|\[\s*\]|\*{3,})', text, re.IGNORECASE)
+    blanks = re.findall(
+        r"(?:\.{3,}|_{3,}|\[\s*INSERT\s*\]|\[\s*NAME\s*\]|\[\s*DATE\s*\]|\[\s*ADDRESS\s*\]|\[\s*AMOUNT\s*\]|\[\s*\]|\*{3,})",
+        text,
+        re.IGNORECASE,
+    )
     if blanks:
         unique_blanks = list(set(b.strip() for b in blanks))
         findings.append(

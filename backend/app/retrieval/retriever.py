@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-
 INSUFFICIENT_LEGAL_EVIDENCE = "INSUFFICIENT_LEGAL_EVIDENCE"
 
 
@@ -50,7 +49,9 @@ class HybridRetriever:
             return RetrievalResult(INSUFFICIENT_LEGAL_EVIDENCE, ())
         return RetrievalResult("RETRIEVED", matches)
 
-    def search_with_scores(self, query: str, limit: int = 5) -> list[tuple[float, SourceRecord]]:
+    def search_with_scores(
+        self, query: str, limit: int = 5
+    ) -> list[tuple[float, SourceRecord]]:
         """Return ranked (score, SourceRecord) tuples for debugging and inspection.
 
         Scores are TF-IDF cosine similarities; results are authority-aware sorted.
@@ -62,6 +63,9 @@ class HybridRetriever:
         scores = cosine_similarity(query_vector, self.matrix)[0]
         ranked = sorted(
             zip(scores, self.sources),
-            key=lambda item: (-item[0], _AUTHORITY_RANK.get(item[1].authority_level, 99)),
+            key=lambda item: (
+                -item[0],
+                _AUTHORITY_RANK.get(item[1].authority_level, 99),
+            ),
         )
         return [(float(score), source) for score, source in ranked][:limit]

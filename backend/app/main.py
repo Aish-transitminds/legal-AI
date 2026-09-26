@@ -1,13 +1,12 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-
 from app.api.documents import router as documents_router
 from app.core.config import get_settings
 from app.db import create_tables
+from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +34,7 @@ app = FastAPI(
 
 # CORS — allow only the configured origins
 _allowed_origins = [
-    origin.strip()
-    for origin in settings.cors_origins.split(",")
-    if origin.strip()
+    origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()
 ]
 
 app.add_middleware(
@@ -48,16 +45,20 @@ app.add_middleware(
     allow_headers=["Content-Type", "Accept"],
 )
 
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=31536000; includeSubDomains"
+    )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Content-Security-Policy"] = "default-src 'self'"
     response.headers["Referrer-Policy"] = "no-referrer"
     return response
+
 
 app.include_router(documents_router)
 
@@ -71,7 +72,13 @@ def health() -> dict[str, str]:
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catch-all handler to prevent internal error details from leaking to clients."""
-    logger.error("Unhandled exception on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+    logger.error(
+        "Unhandled exception on %s %s: %s",
+        request.method,
+        request.url.path,
+        exc,
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "An unexpected error occurred. Please try again later."},

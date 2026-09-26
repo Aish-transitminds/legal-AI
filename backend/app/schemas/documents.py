@@ -1,8 +1,7 @@
-from pydantic import BaseModel
-
 from app.schemas.clauses import ClauseSegment
 from app.schemas.findings import Finding
 from app.schemas.ingestion import ExtractedDocument
+from pydantic import BaseModel
 
 
 class PersistedDocument(BaseModel):

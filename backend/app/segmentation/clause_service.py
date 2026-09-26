@@ -29,15 +29,27 @@ _HEADING_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 FALLBACK_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("parties", r"\b(?:between|lessor|lessee|landlord|tenant|buyer|seller|parties hereto|whereas)\b"),
-    ("term", r"\b(?:for a term of|duration of|period of|commencing on|shall remain in force)\b"),
+    (
+        "parties",
+        r"\b(?:between|lessor|lessee|landlord|tenant|buyer|seller|parties hereto|whereas)\b",
+    ),
+    (
+        "term",
+        r"\b(?:for a term of|duration of|period of|commencing on|shall remain in force)\b",
+    ),
     ("payment", r"\b(?:rent of|shall pay|consideration|fees)\b"),
-    ("termination", r"\b(?:terminate|termination|determination of this demise|re-entry|re-enter|cancel)\b"),
+    (
+        "termination",
+        r"\b(?:terminate|termination|determination of this demise|re-entry|re-enter|cancel)\b",
+    ),
     ("notice", r"\b(?:notice in writing|written notice|serve notice)\b"),
     ("confidentiality", r"\b(?:confidential|non-disclosure|secrecy)\b"),
     ("governing_law", r"\b(?:governed by|construed in accordance with|laws of)\b"),
     ("jurisdiction", r"\b(?:jurisdiction|venue|courts? of)\b"),
-    ("dispute_resolution", r"\b(?:arbitration|arbitrator|mediate|dispute resolution)\b"),
+    (
+        "dispute_resolution",
+        r"\b(?:arbitration|arbitrator|mediate|dispute resolution)\b",
+    ),
 )
 
 
@@ -70,7 +82,9 @@ def _classify_heading(line: str) -> str | None:
         return None
 
     for clause_type, pattern in _HEADING_PATTERNS:
-        if re.fullmatch(pattern, normalized) or re.match(rf"^(?:{pattern})\s*[:\-]?$", normalized):
+        if re.fullmatch(pattern, normalized) or re.match(
+            rf"^(?:{pattern})\s*[:\-]?$", normalized
+        ):
             return clause_type
 
     return None
@@ -140,7 +154,10 @@ def segment_clauses(document: ExtractedDocument) -> list[dict[str, object]]:
     merged: list[dict[str, object]] = [segments[0]]
     for seg in segments[1:]:
         last = merged[-1]
-        if seg["clause_type"] == last["clause_type"] and seg["page_number"] == last["page_number"]:
+        if (
+            seg["clause_type"] == last["clause_type"]
+            and seg["page_number"] == last["page_number"]
+        ):
             last["text"] = str(last["text"]) + "\n\n" + str(seg["text"])
         else:
             merged.append(seg)

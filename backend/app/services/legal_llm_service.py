@@ -3,7 +3,6 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 import httpx
-
 from app.retrieval.retriever import INSUFFICIENT_LEGAL_EVIDENCE
 from app.schemas.findings import Finding
 from app.schemas.llm import EvidenceSource, FindingExplanation
@@ -33,7 +32,9 @@ def _validate_citations(
 ) -> FindingExplanation:
     allowed = {source.citation for source in sources}
     citations = payload.get("citations", [])
-    if not isinstance(citations, list) or any(citation not in allowed for citation in citations):
+    if not isinstance(citations, list) or any(
+        citation not in allowed for citation in citations
+    ):
         raise ValueError("LLM citations did not match retrieved legal sources.")
 
     return FindingExplanation.model_validate(
@@ -129,7 +130,9 @@ def _chat_prompt(question: str, clauses_text: str) -> str:
     )
 
 
-def _draft_clause_prompt(clause_type: str, doc_type: str, existing_clauses_text: str) -> str:
+def _draft_clause_prompt(
+    clause_type: str, doc_type: str, existing_clauses_text: str
+) -> str:
     return (
         f"You are a legal drafting assistant specializing in Indian commercial law. "
         f"Draft a {clause_type.replace('_', ' ')} clause for a {doc_type.replace('_', ' ')} agreement.\n\n"
@@ -204,7 +207,9 @@ class OllamaProvider(LegalLLM):
                 json={"model": self.model, "prompt": prompt, "stream": False},
             )
             response.raise_for_status()
-            return _validate_citations(_parse_json(response.json()["response"]), finding, sources)
+            return _validate_citations(
+                _parse_json(response.json()["response"]), finding, sources
+            )
         else:
             prompt = _general_prompt(finding)
             response = await self.client.post(
@@ -237,8 +242,11 @@ class OpenAICompatibleProvider(LegalLLM):
         self.model = model
         self.client = client or httpx.AsyncClient(timeout=timeout)
 
-    async def _post_with_retry(self, endpoint: str, json_body: dict[str, Any]) -> httpx.Response:
+    async def _post_with_retry(
+        self, endpoint: str, json_body: dict[str, Any]
+    ) -> httpx.Response:
         import asyncio
+
         for attempt in range(3):
             response = await self.client.post(
                 f"{self.base_url}{endpoint}",
@@ -246,11 +254,11 @@ class OpenAICompatibleProvider(LegalLLM):
                 json=json_body,
             )
             if response.status_code == 429 and attempt < 2:
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s
+                await asyncio.sleep(2**attempt)  # Exponential backoff: 1s, 2s
                 continue
             response.raise_for_status()
             return response
-            
+
     async def explain_finding(
         self, finding: Finding, sources: list[EvidenceSource]
     ) -> FindingExplanation:
@@ -301,9 +309,21 @@ def build_legal_llm(settings: Any) -> LegalLLM:
             timeout=settings.llm_timeout_seconds,
         )
     if provider in {"openrouter", "groq"}:
-        api_key = settings.openrouter_api_key if provider == "openrouter" else settings.groq_api_key
-        base_url = settings.openrouter_base_url if provider == "openrouter" else settings.groq_base_url
-        model = settings.openrouter_model if provider == "openrouter" else settings.groq_model
+        api_key = (
+            settings.openrouter_api_key
+            if provider == "openrouter"
+            else settings.groq_api_key
+        )
+        base_url = (
+            settings.openrouter_base_url
+            if provider == "openrouter"
+            else settings.groq_base_url
+        )
+        model = (
+            settings.openrouter_model
+            if provider == "openrouter"
+            else settings.groq_model
+        )
         if not api_key:
             raise ValueError(f"{provider} API key is not configured.")
         return OpenAICompatibleProvider(
